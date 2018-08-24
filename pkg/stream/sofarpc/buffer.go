@@ -15,29 +15,37 @@
  * limitations under the License.
  */
 
-package network
+package sofarpc
 
 import (
 	"context"
-
-	"github.com/alipay/sofa-mosn/pkg/api/v2"
-	"github.com/alipay/sofa-mosn/pkg/filter/network/faultinject"
-	"github.com/alipay/sofa-mosn/pkg/filter/network/tcpproxy"
-	"github.com/alipay/sofa-mosn/pkg/types"
+	"github.com/alipay/sofa-mosn/pkg/buffer"
 )
 
-// FaultInjectFilterConfigFactory
-type FaultInjectFilterConfigFactory struct {
-	FaultInject *v2.FaultInject
-	Proxy       *v2.TCPProxy
+type sofaBufferCtx struct{}
+
+func (ctx sofaBufferCtx) Name() int {
+	return buffer.SofaStream
 }
 
-// CreateFilterFactory
-// create NetworkFilterFactoryCb
-func (fifcf *FaultInjectFilterConfigFactory) CreateFilterFactory(context context.Context,
-	clusterManager types.ClusterManager) types.NetworkFilterFactoryCb {
-	return func(manager types.FilterManager) {
-		manager.AddReadFilter(faultinject.NewFaultInjector(fifcf.FaultInject))
-		manager.AddReadFilter(tcpproxy.NewProxy(context, fifcf.Proxy, clusterManager))
+func (ctx sofaBufferCtx) New(interface{}) interface{} {
+	return new(sofaBuffers)
+}
+
+func (ctx sofaBufferCtx) Reset(i interface{}) {
+	buf, _ := i.(*sofaBuffers)
+	*buf = sofaBuffers{}
+}
+
+type sofaBuffers struct {
+	client stream
+	server stream
+}
+
+func sofaBuffersByContent(context context.Context) *sofaBuffers {
+	ctx := buffer.PoolContext(context)
+	if ctx == nil {
+		return nil
 	}
+	return ctx.Find(sofaBufferCtx{}, nil).(*sofaBuffers)
 }

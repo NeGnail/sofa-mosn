@@ -241,11 +241,11 @@ func newActiveListener(listener types.Listener, logger log.Logger, accessLoggers
 		listener:               listener,
 		networkFiltersFactory:  networkFiltersFactory,
 		streamFiltersFactories: streamFiltersFactories,
-		conns:                  list.New(),
-		handler:                handler,
-		stopChan:               stopChan,
-		logger:                 logger,
-		accessLogs:             accessLoggers,
+		conns:      list.New(),
+		handler:    handler,
+		stopChan:   stopChan,
+		logger:     logger,
+		accessLogs: accessLoggers,
 	}
 
 	listenPort := 0
@@ -292,7 +292,6 @@ func (al *activeListener) OnAccept(rawc net.Conn, handOffRestoredDestinationConn
 	if oriRemoteAddr != nil {
 		ctx = context.WithValue(ctx, types.ContextOriRemoteAddr, oriRemoteAddr)
 	}
-
 	arc.ContinueFilterChain(ctx, true)
 }
 

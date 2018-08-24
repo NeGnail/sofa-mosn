@@ -19,17 +19,17 @@ package proxy
 
 import (
 	"container/list"
-	"fmt"
 	"net"
-	"reflect"
 	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"context"
+	"fmt"
 	"github.com/alipay/sofa-mosn/pkg/log"
-	"github.com/alipay/sofa-mosn/pkg/network"
 	"github.com/alipay/sofa-mosn/pkg/types"
+	"reflect"
 )
 
 // types.StreamEventListener
@@ -92,17 +92,23 @@ type downStream struct {
 	// mux for downstream-upstream flow
 	mux sync.Mutex
 
+	context context.Context
+
 	logger log.Logger
 }
 
-func newActiveStream(streamID string, proxy *proxy, responseSender types.StreamSender) *downStream {
-	stream := &downStream{}
+func newActiveStream(context context.Context, streamID string, proxy *proxy, responseSender types.StreamSender) *downStream {
+	proxyBuffers := proxyBuffersByContent(context)
+
+	stream := &proxyBuffers.stream
 
 	stream.streamID = streamID
 	stream.proxy = proxy
-	stream.requestInfo = network.NewRequestInfo()
+	stream.requestInfo = &proxyBuffers.info
+	stream.requestInfo.SetStartTime()
 	stream.responseSender = responseSender
 	stream.responseSender.GetStream().AddEventListener(stream)
+	stream.context = context
 
 	stream.logger = log.ByContext(proxy.context)
 
@@ -261,7 +267,12 @@ func (s *downStream) doReceiveHeaders(filter *activeStreamReceiverFilter, header
 
 		return
 	}
-	log.StartLogger.Tracef("get route : %v,clusterName=%v", route, route.RouteRule().ClusterName())
+
+	// as ClusterName has random factor when choosing weighted cluster,
+	// so need determination at the first time
+	clusterName := route.RouteRule().ClusterName()
+
+	log.StartLogger.Tracef("get route : %v,clusterName=%v", route, clusterName)
 
 	s.route = route
 
@@ -272,7 +283,7 @@ func (s *downStream) doReceiveHeaders(filter *activeStreamReceiverFilter, header
 
 	// active realize loadbalancer ctx
 	log.StartLogger.Tracef("before initializeUpstreamConnectionPool")
-	pool, err := s.initializeUpstreamConnectionPool(route.RouteRule().ClusterName(), s)
+	pool, err := s.initializeUpstreamConnectionPool(clusterName, s)
 
 	if err != nil {
 		log.DefaultLogger.Errorf("initialize Upstream Connection Pool error, request can't be proxyed,error = %v", err)
@@ -284,11 +295,11 @@ func (s *downStream) doReceiveHeaders(filter *activeStreamReceiverFilter, header
 	s.retryState = newRetryState(route.RouteRule().Policy().RetryPolicy(), headers, s.cluster)
 
 	//Build Request
-	s.upstreamRequest = &upstreamRequest{
-		downStream: s,
-		proxy:      s.proxy,
-		connPool:   pool,
-	}
+	proxyBuffers := proxyBuffersByContent(s.context)
+	s.upstreamRequest = &proxyBuffers.request
+	s.upstreamRequest.downStream = s
+	s.upstreamRequest.proxy = s.proxy
+	s.upstreamRequest.connPool = pool
 
 	//Call upstream's append header method to build upstream's request
 	s.upstreamRequest.appendHeaders(headers, endStream)
@@ -299,7 +310,7 @@ func (s *downStream) doReceiveHeaders(filter *activeStreamReceiverFilter, header
 }
 
 func (s *downStream) OnReceiveData(data types.IoBuffer, endStream bool) {
-	s.downstreamReqDataBuf = s.proxy.bytesBufferPool.Clone(data)
+	s.downstreamReqDataBuf = data
 
 	workerPool.Offer(&receiveDataEvent{
 		streamEvent: streamEvent{
@@ -736,6 +747,7 @@ func (s *downStream) resetStream() {
 }
 
 func (s *downStream) sendHijackReply(code int, headers map[string]string) {
+	s.logger.Debugf("set hijack reply, stream id = %s, code = %d", s.streamID, code)
 	if headers == nil {
 		headers = make(map[string]string, 5)
 	}
@@ -822,7 +834,7 @@ func (s *downStream) ComputeHashKey() types.HashedValue {
 
 func (s *downStream) MetadataMatchCriteria() types.MetadataMatchCriteria {
 	if nil != s.requestInfo.RouteEntry() {
-		return s.requestInfo.RouteEntry().MetadataMatchCriteria()
+		return s.requestInfo.RouteEntry().MetadataMatchCriteria(s.cluster.Name())
 	}
 
 	return nil

@@ -20,13 +20,13 @@ package http
 import (
 	"container/list"
 	"context"
+	"crypto/tls"
 	"sync"
 	"sync/atomic"
 
 	str "github.com/alipay/sofa-mosn/pkg/stream"
 	"github.com/alipay/sofa-mosn/pkg/types"
 	"github.com/valyala/fasthttp"
-	"crypto/tls"
 )
 
 // connection management is done by fasthttp
@@ -110,9 +110,9 @@ func (c *codecClient) RemoteClose() bool {
 	return c.RemoteCloseFlag
 }
 
-func (c *codecClient) NewStream(streamID string, respDecoder types.StreamReceiver) types.StreamSender {
+func (c *codecClient) NewStream(context context.Context, streamID string, respDecoder types.StreamReceiver) types.StreamSender {
 	ar := newActiveRequest(c, respDecoder)
-	ar.requestEncoder = c.Codec.NewStream(streamID, ar)
+	ar.requestEncoder = c.Codec.NewStream(context, streamID, ar)
 	ar.requestEncoder.GetStream().AddEventListener(ar)
 
 	c.AcrMux.Lock()

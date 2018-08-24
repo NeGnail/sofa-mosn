@@ -179,7 +179,7 @@ type ClientStreamConnection interface {
 	// NewStream creates a new outgoing request stream
 	// responseDecoder supplies the decoder listeners on decode event
 	// StreamSender supplies the encoder to write the request
-	NewStream(streamID string, responseDecoder StreamReceiver) StreamSender
+	NewStream(context context.Context, streamID string, responseDecoder StreamReceiver) StreamSender
 }
 
 // StreamConnectionEventListener is a stream connection event listener
@@ -193,7 +193,7 @@ type ServerStreamConnectionEventListener interface {
 	StreamConnectionEventListener
 
 	// NewStream returns request stream decoder
-	NewStream(streamID string, responseEncoder StreamSender) StreamReceiver
+	NewStream(context context.Context, streamID string, responseEncoder StreamSender) StreamReceiver
 }
 
 type StreamFilterBase interface {
@@ -314,11 +314,13 @@ type StreamReceiverFilterCallbacks interface {
 	DecoderBufferLimit() uint32
 }
 
+// StreamFilterChainFactory adds filter into callbacks
 type StreamFilterChainFactory interface {
-	CreateFilterChain(context context.Context, callbacks FilterChainFactoryCallbacks)
+	CreateFilterChain(context context.Context, callbacks StreamFilterChainFactoryCallbacks)
 }
 
-type FilterChainFactoryCallbacks interface {
+// StreamFilterChainFactoryCallbacks is called in StreamFilterChainFactory
+type StreamFilterChainFactoryCallbacks interface {
 	AddStreamSenderFilter(filter StreamSenderFilter)
 
 	AddStreamReceiverFilter(filter StreamReceiverFilter)

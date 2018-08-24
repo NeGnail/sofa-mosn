@@ -18,9 +18,14 @@
 package main
 
 import (
+	"net/http"
+	_ "net/http/pprof"
+
 	"github.com/alipay/sofa-mosn/pkg/config"
-	"github.com/alipay/sofa-mosn/cmd/mosn"
+	"github.com/alipay/sofa-mosn/pkg/mosn"
 	"github.com/urfave/cli"
+	"runtime/trace"
+	"os"
 )
 
 var (
@@ -44,6 +49,25 @@ var (
 			},
 		},
 		Action: func(c *cli.Context) error {
+			go func() {
+				http.HandleFunc("/start_trace", func(writer http.ResponseWriter, request *http.Request) {
+					f, err := os.Create("trace.out")
+					if err != nil{
+						writer.Write([]byte("start trace failed"))
+						return
+					}
+					trace.Start(f)
+					writer.Write([]byte("trace start\n"))
+				})
+
+				http.HandleFunc("/stop_trace", func(writer http.ResponseWriter, request *http.Request) {
+					trace.Stop()
+					writer.Write([]byte("trace stop\n"))
+				})
+
+				// pprof server
+				http.ListenAndServe("0.0.0.0:9090", nil)
+			}()
 			configPath := c.String("config")
 			serviceCluster := c.String("service-cluster")
 			serviceNode := c.String("service-node")

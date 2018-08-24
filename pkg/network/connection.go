@@ -27,10 +27,10 @@ import (
 	"math/rand"
 	"net"
 	"runtime"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
-	"runtime/debug"
 )
 
 // Network related const
@@ -70,7 +70,6 @@ type connection struct {
 	writeBuffer         *buffer.IoBufferPoolEntry
 	writeBufferMux      sync.RWMutex
 	writeBufferChan     chan bool
-	writeSchedule       uint32
 	internalLoopStarted bool
 	internalStopChan    chan struct{}
 	transferChan        chan uint64
@@ -83,7 +82,6 @@ type connection struct {
 
 	closed    uint32
 	startOnce sync.Once
-	eventLoop *EventLoop
 
 	logger log.Logger
 }
@@ -151,68 +149,35 @@ func (c *connection) ID() uint64 {
 
 func (c *connection) Start(lctx context.Context) {
 	c.startOnce.Do(func() {
+		c.internalLoopStarted = true
 
-		//TODO read switch from config, and create sub method
-		if true {
+		go func() {
+			defer func() {
+				if p := recover(); p != nil {
+					c.logger.Errorf("panic %v", p)
 
-			c.eventLoop = Attach()
-			c.eventLoop.RegisterRead(c.id, c.rawConnection, &ConnEventHandler{
-				OnRead: func() bool {
-					err := c.doRead()
+					debug.PrintStack()
 
-					if err != nil {
-
-						if err == io.EOF {
-							c.Close(types.NoFlush, types.RemoteClose)
-						} else {
-							c.Close(types.NoFlush, types.OnReadErrClose)
-						}
-
-						c.logger.Errorf("Error on read. Connection = %d, Remote Address = %s, err = %s",
-							c.id, c.RemoteAddr().String(), err)
-
-						return false
-					}
-
-					return true
-				},
-
-				OnHup: func() bool {
-					c.Close(types.NoFlush, types.RemoteClose)
-					return false
-				},
-			})
-		} else {
-			c.internalLoopStarted = true
-
-			go func() {
-				defer func() {
-					if p := recover(); p != nil {
-						c.logger.Errorf("panic %v", p)
-
-						debug.PrintStack()
-
-						c.startReadLoop()
-					}
-				}()
-
-				c.startReadLoop()
+					c.startReadLoop()
+				}
 			}()
 
-			go func() {
-				defer func() {
-					if p := recover(); p != nil {
-						c.logger.Errorf("panic %v", p)
+			c.startReadLoop()
+		}()
 
-						debug.PrintStack()
+		go func() {
+			defer func() {
+				if p := recover(); p != nil {
+					c.logger.Errorf("panic %v", p)
 
-						c.startWriteLoop()
-					}
-				}()
+					debug.PrintStack()
 
-				c.startWriteLoop()
+					c.startWriteLoop()
+				}
 			}()
-		}
+
+			c.startWriteLoop()
+		}()
 	})
 }
 
@@ -357,28 +322,8 @@ func (c *connection) Write(buffers ...types.IoBuffer) error {
 		}
 	}
 
-	if c.internalLoopStarted {
-		if len(c.writeBufferChan) == 0 {
-			c.writeBufferChan <- true
-		}
-	} else if atomic.CompareAndSwapUint32(&c.writeSchedule, 0, 1) {
-		pool.Schedule(func() {
-			defer atomic.CompareAndSwapUint32(&c.writeSchedule, 1, 0)
-
-			_, err := c.doWrite()
-			if err != nil {
-				if err == io.EOF {
-					// remote conn closed
-					c.Close(types.NoFlush, types.RemoteClose)
-				} else {
-					// on non-timeout error
-					c.Close(types.NoFlush, types.OnWriteErrClose)
-				}
-
-				c.logger.Errorf("Error on write. Connection = %d, Remote Address = %s, err = %s",
-					c.id, c.RemoteAddr().String(), err)
-			}
-		})
+	if len(c.writeBufferChan) == 0 {
+		c.writeBufferChan <- true
 	}
 
 	c.writeBufferMux.Unlock()
@@ -545,8 +490,6 @@ func (c *connection) Close(ccType types.ConnectionCloseType, eventType types.Con
 	if c.internalLoopStarted {
 		// because close function must be called by one io loop thread, notify another loop here
 		close(c.internalStopChan)
-	} else {
-		c.eventLoop.Unregister(c.id)
 	}
 
 	c.rawConnection.Close()

@@ -14,32 +14,17 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+ 
+package types
 
-package buffer
+// BufferPoolCtx is the bufferpool's context
+type BufferPoolCtx interface {
+	// Name returns the bufferpool's name
+	Name() int
 
-import (
-	"sync"
+	// New returns the buffer
+	New(interface{}) interface{}
 
-	"github.com/alipay/sofa-mosn/pkg/types"
-)
-
-type objectPool struct {
-	sync.Pool
-}
-
-func (p *objectPool) Take() (object interface{}) {
-	object = p.Get()
-
-	return
-}
-
-func (p *objectPool) Give(object interface{}) {
-	p.Put(object)
-}
-
-// NewObjectPool can create an object pool with poolSize
-func NewObjectPool(poolSize int) types.ObjectBufferPool {
-	pool := &objectPool{}
-
-	return pool
+	// Reset resets the buffer
+	Reset(interface{})
 }

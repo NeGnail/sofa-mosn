@@ -15,56 +15,36 @@
  * limitations under the License.
  */
 
-package buffer
+package tcpproxy
 
 import (
-	"io"
-	"sync"
+	"context"
 
+	"github.com/alipay/sofa-mosn/pkg/api/v2"
+	"github.com/alipay/sofa-mosn/pkg/config"
+	"github.com/alipay/sofa-mosn/pkg/filter"
 	"github.com/alipay/sofa-mosn/pkg/types"
 )
 
-type IoBufferPool struct {
-	defaultSize uint64
-	pool        sync.Pool
+func init() {
+	filter.RegisterNetwork(v2.TCP_PROXY, CreateTCPProxyFactory)
 }
 
-type IoBufferPoolEntry struct {
-	Br types.IoBuffer
-	Io io.ReadWriter
+type tcpProxyFilterConfigFactory struct {
+	Proxy *v2.TCPProxy
 }
 
-func (bpe *IoBufferPoolEntry) Read() (n int64, err error) {
-	return bpe.Br.ReadOnce(bpe.Io)
+func (f *tcpProxyFilterConfigFactory) CreateFilterChain(context context.Context, clusterManager types.ClusterManager, callbacks types.NetWorkFilterChainFactoryCallbacks) {
+	rf := NewProxy(context, f.Proxy, clusterManager)
+	callbacks.AddReadFilter(rf)
 }
 
-func (bpe *IoBufferPoolEntry) Write() (n int64, err error) {
-	return bpe.Br.WriteTo(bpe.Io)
-}
-
-func (p *IoBufferPool) Take(r io.ReadWriter) (bpe *IoBufferPoolEntry) {
-	v := p.pool.Get()
-
-	if v != nil {
-		v.(*IoBufferPoolEntry).Io = r
-
-		return v.(*IoBufferPoolEntry)
+func CreateTCPProxyFactory(conf map[string]interface{}) (types.NetworkFilterChainFactory, error) {
+	p, err := config.ParseTCPProxy(conf)
+	if err != nil {
+		return nil, err
 	}
-
-	bpe = &IoBufferPoolEntry{nil, r}
-	bpe.Br = NewIoBuffer(int(p.defaultSize))
-
-	return
-}
-
-func (p *IoBufferPool) Give(bpe *IoBufferPoolEntry) {
-	bpe.Io = nil
-	bpe.Br.Reset()
-	p.pool.Put(bpe)
-}
-
-func NewIoBufferPool(bufferSize int) *IoBufferPool {
-	return &IoBufferPool{
-		defaultSize: uint64(bufferSize),
-	}
+	return &tcpProxyFilterConfigFactory{
+		Proxy: p,
+	}, nil
 }
