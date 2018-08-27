@@ -22,8 +22,6 @@ import (
 	"context"
 	"sync"
 
-	"runtime"
-
 	"github.com/alipay/sofa-mosn/pkg/api/v2"
 	"github.com/alipay/sofa-mosn/pkg/log"
 	"github.com/alipay/sofa-mosn/pkg/buffer"
@@ -31,6 +29,7 @@ import (
 	"github.com/alipay/sofa-mosn/pkg/stream"
 	mosnsync "github.com/alipay/sofa-mosn/pkg/sync"
 	"github.com/alipay/sofa-mosn/pkg/types"
+	"runtime"
 )
 
 var (
@@ -45,7 +44,7 @@ func init() {
 	// default shardsNum is equal to the cpu num
 	shardsNum := runtime.NumCPU()
 	// use 4096 as chan buffer length
-	poolSize := shardsNum * 8096
+	poolSize := shardsNum * 8192
 
 	workerPool, _ = mosnsync.NewShardWorkerPool(poolSize, shardsNum, eventDispatch)
 	workerPool.Init()

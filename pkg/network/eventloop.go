@@ -14,11 +14,12 @@ import (
 var (
 	// this pool if for event handle
 	readPool  = mosnsync.NewSimplePool(runtime.NumCPU())
-	writePool = mosnsync.NewSimplePool(1)
+	writePool = mosnsync.NewSimplePool(runtime.NumCPU() * 2)
 
 	rrCounter                   uint32 = 0
-	poolSize                    uint32 = 1//uint32(runtime.NumCPU())
+	poolSize                    uint32 = 1
 	eventLoopPool                      = make([]*EventLoop, poolSize)
+
 	eventAlreadyRegisteredError        = errors.New("event already registered")
 )
 
@@ -86,7 +87,7 @@ func (el *EventLoop) Register(id uint64, conn net.Conn, handler *ConnEventHandle
 
 func (el *EventLoop) RegisterRead(id uint64, conn net.Conn, handler *ConnEventHandler) error {
 	// handle read
-	read, err := netpoll.HandleRead(conn)
+	read, err := netpoll.HandleReadOnce(conn)
 	if err != nil {
 		return err
 	}
@@ -162,12 +163,12 @@ func (el *EventLoop) readWrapper(desc *netpoll.Desc, handler *ConnEventHandler) 
 				return
 			}
 		}
-		//readPool.Schedule(func() {
+		readPool.Schedule(func() {
 			if !handler.OnRead() {
 				return
 			}
-			//el.poller.Resume(desc)
-		//})
+			el.poller.Resume(desc)
+		})
 	}
 }
 
@@ -180,7 +181,7 @@ func (el *EventLoop) writeWrapper(desc *netpoll.Desc, handler *ConnEventHandler)
 				return
 			}
 		}
-		writePool.Schedule(func() {
+		writePool.ScheduleAlways(func() {
 			if !handler.OnWrite() {
 				return
 			}

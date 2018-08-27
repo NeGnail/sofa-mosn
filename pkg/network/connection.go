@@ -32,6 +32,7 @@ import (
 	"github.com/alipay/sofa-mosn/pkg/buffer"
 	"github.com/alipay/sofa-mosn/pkg/types"
 	"github.com/rcrowley/go-metrics"
+	"github.com/alipay/sofa-mosn/pkg/server"
 )
 
 // Network related const
@@ -70,7 +71,7 @@ type connection struct {
 	writeBuffers        net.Buffers
 	ioBuffers           []types.IoBuffer
 	writeBufferChan     chan *[]types.IoBuffer
-	writeSchedule       uint32
+	writeSchedChan      chan bool
 	internalLoopStarted bool
 	internalStopChan    chan struct{}
 	transferChan        chan uint64
@@ -102,6 +103,7 @@ func NewServerConnection(ctx context.Context, rawc net.Conn, stopChan chan struc
 		readEnabledChan:  make(chan bool, 1),
 		internalStopChan: make(chan struct{}),
 		writeBufferChan:  make(chan *[]types.IoBuffer, 256),
+		writeSchedChan:   make(chan bool, 1),
 		transferChan:     make(chan uint64),
 		stats: &types.ConnectionStats{
 			ReadTotal:    metrics.NewCounter(),
@@ -149,8 +151,7 @@ func (c *connection) ID() uint64 {
 func (c *connection) Start(lctx context.Context) {
 	c.startOnce.Do(func() {
 
-		//TODO read switch from config, and create sub method
-		if true {
+		if server.UseNetpollMode {
 
 			c.eventLoop = Attach()
 			c.eventLoop.RegisterRead(c.id, c.rawConnection, &ConnEventHandler{
@@ -180,19 +181,6 @@ func (c *connection) Start(lctx context.Context) {
 				},
 			})
 
-			go func() {
-				defer func() {
-					if p := recover(); p != nil {
-						c.logger.Errorf("panic %v", p)
-
-						debug.PrintStack()
-
-						c.startWriteLoop()
-					}
-				}()
-
-				c.startWriteLoop()
-			}()
 		} else {
 			c.internalLoopStarted = true
 
@@ -294,36 +282,6 @@ transfer:
 	c.transferChan <- id
 }
 
-func (c *connection) doRawRead() (err error) {
-	if c.readBuffer == nil {
-		c.readBuffer = c.ioBufferPool.Take(DefaultBufferReadCapacity)
-	}
-
-	var bytesRead int64
-
-	bytesRead, err = c.readBuffer.ReadOnce(c.rawConnection)
-
-	if err != nil {
-		if te, ok := err.(net.Error); ok && te.Timeout() {
-			if bytesRead == 0 {
-				return err
-			}
-		} else {
-			return err
-		}
-	}
-
-	c.updateReadBufStats(bytesRead, int64(c.readBuffer.Len()))
-
-	for _, cb := range c.bytesReadCallbacks {
-		cb(uint64(bytesRead))
-	}
-
-	c.onRead(bytesRead)
-
-	return
-}
-
 func (c *connection) doRead() (err error) {
 	if c.readBuffer == nil {
 		c.readBuffer = c.ioBufferPool.Take(DefaultBufferReadCapacity)
@@ -391,47 +349,82 @@ func (c *connection) Write(buffers ...types.IoBuffer) error {
 		return nil
 	}
 
-	//if !c.internalLoopStarted && atomic.CompareAndSwapUint32(&c.writeSchedule, 0, 1) {
-	//	writePool.Schedule(func() {
-	//		atomic.CompareAndSwapUint32(&c.writeSchedule, 1, 0)
-	//
-	//		// at least 1 buf need
-	//		select {
-	//		case buf := <-c.writeBufferChan:
-	//			c.appendBuffer(buf)
-	//
-	//			//todo: dynamic set loop nums
-	//			slots := len(c.writeBufferChan)
-	//			if slots > 10 {
-	//				slots = 10
-	//			}
-	//			for i := 0; i < slots; i++ {
-	//				select {
-	//				case buf := <-c.writeBufferChan:
-	//					c.appendBuffer(buf)
-	//				default:
-	//				}
-	//			}
-	//		}
-	//
-	//		_, err := c.doWrite()
-	//		if err != nil {
-	//			if err == io.EOF {
-	//				// remote conn closed
-	//				c.Close(types.NoFlush, types.RemoteClose)
-	//			} else {
-	//				// on non-timeout error
-	//				c.Close(types.NoFlush, types.OnWriteErrClose)
-	//			}
-	//
-	//			c.logger.Errorf("Error on write. Connection = %d, Remote Address = %s, err = %s",
-	//				c.id, c.RemoteAddr().String(), err)
-	//		}
-	//	})
-	//}
+	if !c.internalLoopStarted {
 
-	c.writeBufferChan <- &buffers
+		// Start schedule if not started
+		select {
+		case c.writeSchedChan <- true:
+			c.scheduleWrite()
+		default:
+		}
+
+	wait:
+		for {
+			select {
+			case c.writeBufferChan <- &buffers:
+				break wait
+			case c.writeSchedChan <- true:
+				c.scheduleWrite()
+			}
+		}
+	}
 	return nil
+}
+
+func (c *connection) scheduleWrite() {
+	writePool.ScheduleAlways(func() {
+		defer func() { <-c.writeSchedChan }()
+
+		// at least 1 buffer need
+		c.appendBuffer(<-c.writeBufferChan)
+
+		//todo: dynamic set loop nums
+		//slots := len(c.writeBufferChan)
+		//if slots < 10 {
+		//	slots = 10
+		//}
+		//
+		//for i := 0; i < slots; i++ {
+		//	select {
+		//	case buf := <-c.writeBufferChan:
+		//		c.appendBuffer(buf)
+		//	default:
+		//	}
+		//}
+
+		var err error
+		i := 0
+		timer := time.NewTimer(3 * time.Millisecond)
+		for {
+			select {
+			case buf := <-c.writeBufferChan:
+				c.appendBuffer(buf)
+				i++
+				if i > 100 {
+					_, err = c.doWriteIo()
+					goto end
+				}
+			case <-timer.C:
+				_, err = c.doWriteIo()
+				goto end
+			}
+		}
+	end:
+
+	//_, err := c.doWrite()
+		if err != nil {
+			if err == io.EOF {
+				// remote conn closed
+				c.Close(types.NoFlush, types.RemoteClose)
+			} else {
+				// on non-timeout error
+				c.Close(types.NoFlush, types.OnWriteErrClose)
+			}
+
+			c.logger.Errorf("Error on write. Connection = %d, Remote Address = %s, err = %s",
+				c.id, c.RemoteAddr().String(), err)
+		}
+	})
 }
 
 func (c *connection) startWriteLoop() {
@@ -799,6 +792,7 @@ func NewClientConnection(sourceAddr net.Addr, tlsMng types.TLSContextManager, re
 			readEnabledChan:  make(chan bool, 1),
 			internalStopChan: make(chan struct{}),
 			writeBufferChan:  make(chan *[]types.IoBuffer, 256),
+			writeSchedChan:   make(chan bool, 1),
 			stats: &types.ConnectionStats{
 				ReadTotal:    metrics.NewCounter(),
 				ReadCurrent:  metrics.NewGauge(),

@@ -39,6 +39,7 @@ var (
 	pidFile               string
 	onProcessExit         []func()
 	GracefulTimeout       = time.Second * 30 //default 30s
+	UseNetpollMode        = false
 	shutdownCallbacksOnce sync.Once
 	shutdownCallbacks     []func() error
 )

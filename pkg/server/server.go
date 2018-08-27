@@ -70,6 +70,8 @@ func NewServer(config *Config, cmFilter types.ClusterManagerFilter, clMng types.
 		if config.Processor > 0 {
 			procNum = config.Processor
 		}
+
+		UseNetpollMode = config.UseNetpollMode
 	}
 
 	runtime.GOMAXPROCS(procNum)
