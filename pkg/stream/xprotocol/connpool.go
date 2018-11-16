@@ -21,11 +21,14 @@ import (
 	"context"
 	"sync"
 
+	"sync/atomic"
+
 	"github.com/alipay/sofa-mosn/pkg/log"
 	"github.com/alipay/sofa-mosn/pkg/protocol"
 	"github.com/alipay/sofa-mosn/pkg/proxy"
 	str "github.com/alipay/sofa-mosn/pkg/stream"
 	"github.com/alipay/sofa-mosn/pkg/types"
+	metrics "github.com/rcrowley/go-metrics"
 )
 
 func init() {
@@ -78,7 +81,7 @@ func (p *connPool) NewStream(context context.Context, streamID string, responseD
 		p.host.HostStats().UpstreamRequestPendingOverflow.Inc(1)
 		p.host.ClusterInfo().Stats().UpstreamRequestPendingOverflow.Inc(1)
 	} else {
-		p.primaryClient.totalStream++
+		atomic.AddUint64(&p.primaryClient.totalStream, 1)
 		p.host.HostStats().UpstreamRequestTotal.Inc(1)
 		p.host.HostStats().UpstreamRequestActive.Inc(1)
 		p.host.ClusterInfo().Stats().UpstreamRequestTotal.Inc(1)
@@ -214,16 +217,15 @@ func newActiveClient(context context.Context, pool *connPool) *activeClient {
 
 	pool.host.HostStats().UpstreamConnectionTotal.Inc(1)
 	pool.host.HostStats().UpstreamConnectionActive.Inc(1)
-	pool.host.HostStats().UpstreamConnectionTotalHTTP2.Inc(1)
 	pool.host.ClusterInfo().Stats().UpstreamConnectionTotal.Inc(1)
 	pool.host.ClusterInfo().Stats().UpstreamConnectionActive.Inc(1)
-	pool.host.ClusterInfo().Stats().UpstreamConnectionTotalHTTP2.Inc(1)
 
+	// bytes total adds all connections data together, but buffered data not
 	codecClient.SetConnectionStats(&types.ConnectionStats{
-		ReadTotal:    pool.host.ClusterInfo().Stats().UpstreamBytesRead,
-		ReadCurrent:  pool.host.ClusterInfo().Stats().UpstreamBytesReadCurrent,
-		WriteTotal:   pool.host.ClusterInfo().Stats().UpstreamBytesWrite,
-		WriteCurrent: pool.host.ClusterInfo().Stats().UpstreamBytesWriteCurrent,
+		ReadTotal:     pool.host.ClusterInfo().Stats().UpstreamBytesReadTotal,
+		ReadBuffered:  metrics.NewGauge(),
+		WriteTotal:    pool.host.ClusterInfo().Stats().UpstreamBytesWriteTotal,
+		WriteBuffered: metrics.NewGauge(),
 	})
 
 	return ac
@@ -233,12 +235,6 @@ func newActiveClient(context context.Context, pool *connPool) *activeClient {
 func (ac *activeClient) OnEvent(event types.ConnectionEvent) {
 	ac.pool.onConnectionEvent(ac, event)
 }
-
-// OnAboveWriteBufferHighWatermark no use
-func (ac *activeClient) OnAboveWriteBufferHighWatermark() {}
-
-// OnBelowWriteBufferLowWatermark no use
-func (ac *activeClient) OnBelowWriteBufferLowWatermark() {}
 
 // OnStreamDestroy destroy stream
 func (ac *activeClient) OnStreamDestroy() {

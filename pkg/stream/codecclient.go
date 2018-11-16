@@ -158,15 +158,21 @@ func (c *codecClient) OnEvent(event types.ConnectionEvent) {
 	if event.IsClose() || event.ConnectFailure() {
 		var arNext *list.Element
 
+		c.AcrMux.RLock()
+		acReqs := make([]*activeRequest, 0, c.ActiveRequests.Len())
 		for ar := c.ActiveRequests.Front(); ar != nil; ar = arNext {
-			reason := types.StreamConnectionFailed
-
 			arNext = ar.Next()
+			acReqs = append(acReqs, ar.Value.(*activeRequest))
+		}
+		c.AcrMux.RUnlock()
+
+		for _, ac := range acReqs {
+			reason := types.StreamConnectionFailed
 
 			if c.ConnectedFlag {
 				reason = types.StreamConnectionTermination
 			}
-			ar.Value.(*activeRequest).requestSender.GetStream().ResetStream(reason)
+			ac.requestSender.GetStream().ResetStream(reason)
 		}
 	}
 }
@@ -175,7 +181,7 @@ func (c *codecClient) OnEvent(event types.ConnectionEvent) {
 func (c *codecClient) OnData(buffer types.IoBuffer) types.FilterStatus {
 	c.Codec.Dispatch(buffer)
 
-	return types.StopIteration
+	return types.Stop
 }
 
 func (c *codecClient) OnNewConnection() types.FilterStatus {
@@ -233,7 +239,7 @@ func (r *activeRequest) OnResetStream(reason types.StreamResetReason) {
 	r.codecClient.onReset(r, reason)
 }
 
-func (r *activeRequest) OnReceiveHeaders(context context.Context, headers map[string]string, endStream bool) {
+func (r *activeRequest) OnReceiveHeaders(context context.Context, headers types.HeaderMap, endStream bool) {
 	if endStream {
 		r.onPreDecodeComplete()
 	}
@@ -257,13 +263,13 @@ func (r *activeRequest) OnReceiveData(context context.Context, data types.IoBuff
 	}
 }
 
-func (r *activeRequest) OnReceiveTrailers(context context.Context, trailers map[string]string) {
+func (r *activeRequest) OnReceiveTrailers(context context.Context, trailers types.HeaderMap) {
 	r.onPreDecodeComplete()
 	r.responseReceiver.OnReceiveTrailers(context, trailers)
 	r.onDecodeComplete()
 }
 
-func (r *activeRequest) OnDecodeError(context context.Context, err error, headers map[string]string) {
+func (r *activeRequest) OnDecodeError(context context.Context, err error, headers types.HeaderMap) {
 }
 
 func (r *activeRequest) onPreDecodeComplete() {

@@ -21,16 +21,27 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alipay/sofa-mosn/pkg/api/v2"
 	"github.com/alipay/sofa-mosn/pkg/types"
 )
 
+type headerFormatter interface {
+	format(requestInfo types.RequestInfo) string
+	append() bool
+}
+
+type headerPair struct {
+	headerName      *lowerCaseString
+	headerFormatter headerFormatter
+}
+
 type headerParser struct {
-	headersToAdd    []types.Pair
+	headersToAdd    []*headerPair
 	headersToRemove []*lowerCaseString
 }
 
 type matchable interface {
-	Match(headers map[string]string, randomValue uint64) types.Route
+	Match(headers types.HeaderMap, randomValue uint64) types.Route
 }
 
 type info interface {
@@ -78,20 +89,6 @@ type hashPolicyImpl struct {
 }
 
 type hashMethod struct {
-}
-
-type decoratorImpl struct {
-	Operation string
-}
-
-func (di *decoratorImpl) apply(span types.Span) {
-	if di.Operation != "" {
-		span.SetOperation(di.Operation)
-	}
-}
-
-func (di *decoratorImpl) getOperation() string {
-	return di.Operation
 }
 
 type rateLimitPolicyImpl struct {
@@ -199,3 +196,9 @@ func (p *routerPolicy) CorsPolicy() types.CorsPolicy {
 func (p *routerPolicy) LoadBalancerPolicy() types.LoadBalancerPolicy {
 	return nil
 }
+
+// RouterRuleFactory creates a RouteBase
+type RouterRuleFactory func(base *RouteRuleImplBase, header []v2.HeaderMatcher) RouteBase
+
+// MakeHandlerChain creates a RouteHandlerChain
+type MakeHandlerChain func(types.HeaderMap, types.Routers) *RouteHandlerChain

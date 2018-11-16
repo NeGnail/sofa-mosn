@@ -14,8 +14,8 @@ GIT_NOTES       = $(shell git log -1 --oneline)
 
 BUILD_IMAGE     = godep-builder
 
-IMAGE_NAME      = ${GIT_USER}/mosnd
-REGISTRY        = acs-reg.alipay.com
+IMAGE_NAME      = mosn
+REPOSITORY      = sofastack/${IMAGE_NAME}
 
 RPM_BUILD_IMAGE = afenp-rpm-builder
 RPM_VERSION     = $(shell cat VERSION | tr -d '-')
@@ -24,7 +24,7 @@ RPM_SRC_DIR     = ${RPM_TAR_NAME}-${RPM_VERSION}
 RPM_TAR_FILE    = ${RPM_SRC_DIR}.tar.gz
 
 ut-local:
-	go test ./pkg/...
+	go test -v `go list ./pkg/... | grep -v pkg/mtls/crypto/tls`
 
 unit-test:
 	docker build --rm -t ${BUILD_IMAGE} build/contrib/builder/binary
@@ -38,7 +38,7 @@ coverage:
 	docker run --rm -v $(GOPATH):/go -v $(shell pwd):/go/src/${PROJECT_NAME} -w /go/src/${PROJECT_NAME} ${BUILD_IMAGE} make coverage-local
 
 integrate-local:
-	go test ./test/integrate/...
+	go test -p 1 -v ./test/integrate/...
 
 integrate:
 	docker build --rm -t ${BUILD_IMAGE} build/contrib/builder/binary
@@ -97,7 +97,7 @@ image:
 	@rm -rf IMAGEBUILD
 	cp -r build/contrib/builder/image IMAGEBUILD && cp build/bundles/${MAJOR_VERSION}/binary/${TARGET} IMAGEBUILD && cp -r configs IMAGEBUILD && cp -r etc IMAGEBUILD
 	docker build --no-cache --rm -t ${IMAGE_NAME}:${MAJOR_VERSION}-${GIT_VERSION} IMAGEBUILD
-	docker tag ${IMAGE_NAME}:${MAJOR_VERSION}-${GIT_VERSION} ${REGISTRY}/${IMAGE_NAME}:${MAJOR_VERSION}-${GIT_VERSION}
+	docker tag ${IMAGE_NAME}:${MAJOR_VERSION}-${GIT_VERSION} ${REPOSITORY}:${MAJOR_VERSION}-${GIT_VERSION}
 	rm -rf IMAGEBUILD
 
 rpm:

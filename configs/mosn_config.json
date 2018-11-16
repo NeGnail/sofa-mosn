@@ -31,8 +31,14 @@
                   "config": {
                     "downstream_protocol": "SofaRpc",
                     "name": "proxy_config",
-                    "support_dynamic_route": true,
                     "upstream_protocol": "SofaRpc",
+                    "router_config_name":"test_router"
+                  }
+                },
+                {
+                  "type":"connection_manager",
+                  "config":{
+                    "router_config_name":"test_router",
                     "virtual_hosts": [
                       {
                         "name": "sofa",
@@ -62,7 +68,6 @@
                                   }
                                 }
                               },
-                              "total_cluster_weight":100,
                               "weighted_clusters":[
                                 {
                                   "cluster":{

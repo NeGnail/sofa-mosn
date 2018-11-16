@@ -19,7 +19,6 @@ package cluster
 
 import (
 	"context"
-	"fmt"
 	"net"
 	"sync"
 
@@ -27,7 +26,6 @@ import (
 	"github.com/alipay/sofa-mosn/pkg/log"
 	"github.com/alipay/sofa-mosn/pkg/network"
 	"github.com/alipay/sofa-mosn/pkg/types"
-	"github.com/rcrowley/go-metrics"
 )
 
 type hostSet struct {
@@ -113,51 +111,20 @@ func NewHost(config v2.Host, clusterInfo types.ClusterInfo) types.Host {
 	}
 }
 
-func newHostStats(config v2.Host) types.HostStats {
-	nameSpace := fmt.Sprintf("host.%s", config.Address)
-
-	return types.HostStats{
-		Namespace:                                      nameSpace,
-		UpstreamConnectionTotal:                        metrics.GetOrRegisterCounter(fmt.Sprintf("%s.%s", nameSpace, "upstream_connection_total"), nil),
-		UpstreamConnectionClose:                        metrics.GetOrRegisterCounter(fmt.Sprintf("%s.%s", nameSpace, "upstream_connection_close"), nil),
-		UpstreamConnectionActive:                       metrics.GetOrRegisterCounter(fmt.Sprintf("%s.%s", nameSpace, "upstream_connection_active"), nil),
-		UpstreamConnectionTotalHTTP1:                   metrics.GetOrRegisterCounter(fmt.Sprintf("%s.%s", nameSpace, "upstream_connection_total_http1"), nil),
-		UpstreamConnectionTotalHTTP2:                   metrics.GetOrRegisterCounter(fmt.Sprintf("%s.%s", nameSpace, "upstream_connection_total_http2"), nil),
-		UpstreamConnectionTotalSofaRPC:                 metrics.GetOrRegisterCounter(fmt.Sprintf("%s.%s", nameSpace, "upstream_connection_total_sofarpc"), nil),
-		UpstreamConnectionConFail:                      metrics.GetOrRegisterCounter(fmt.Sprintf("%s.%s", nameSpace, "upstream_connection_con_fail"), nil),
-		UpstreamConnectionLocalClose:                   metrics.GetOrRegisterCounter(fmt.Sprintf("%s.%s", nameSpace, "upstream_connection_local_close"), nil),
-		UpstreamConnectionRemoteClose:                  metrics.GetOrRegisterCounter(fmt.Sprintf("%s.%s", nameSpace, "upstream_connection_remote_close"), nil),
-		UpstreamConnectionLocalCloseWithActiveRequest:  metrics.GetOrRegisterCounter(fmt.Sprintf("%s.%s", nameSpace, "upstream_connection_local_close_with_active_request"), nil),
-		UpstreamConnectionRemoteCloseWithActiveRequest: metrics.GetOrRegisterCounter(fmt.Sprintf("%s.%s", nameSpace, "upstream_connection_remote_close_with_active_request"), nil),
-		UpstreamConnectionCloseNotify:                  metrics.GetOrRegisterCounter(fmt.Sprintf("%s.%s", nameSpace, "upstream_connection_close_notify"), nil),
-		UpstreamRequestTotal:                           metrics.GetOrRegisterCounter(fmt.Sprintf("%s.%s", nameSpace, "upstream_request_request_total"), nil),
-		UpstreamRequestActive:                          metrics.GetOrRegisterCounter(fmt.Sprintf("%s.%s", nameSpace, "upstream_request_request_active"), nil),
-		UpstreamRequestLocalReset:                      metrics.GetOrRegisterCounter(fmt.Sprintf("%s.%s", nameSpace, "upstream_request_request_local_reset"), nil),
-		UpstreamRequestRemoteReset:                     metrics.GetOrRegisterCounter(fmt.Sprintf("%s.%s", nameSpace, "upstream_request_request_remote_reset"), nil),
-		UpstreamRequestTimeout:                         metrics.GetOrRegisterCounter(fmt.Sprintf("%s.%s", nameSpace, "upstream_request_request_timeout"), nil),
-		UpstreamRequestFailureEject:                    metrics.GetOrRegisterCounter(fmt.Sprintf("%s.%s", nameSpace, "upstream_request_failure_eject"), nil),
-		UpstreamRequestPendingOverflow:                 metrics.GetOrRegisterCounter(fmt.Sprintf("%s.%s", nameSpace, "upstream_request_pending_overflow"), nil),
-	}
-}
-
 func (h *host) CreateConnection(context context.Context) types.CreateConnectionData {
 	logger := log.ByContext(context)
+	var tlsMng types.TLSContextManager
+	if !h.tlsDisable {
+		tlsMng = h.clusterInfo.TLSMng()
+	}
 
-	clientConn := network.NewClientConnection(h.clusterInfo.SourceAddress(), h.clusterInfo.TLSMng(), h.address, nil, logger)
+	clientConn := network.NewClientConnection(h.clusterInfo.SourceAddress(), tlsMng, h.address, nil, logger)
 	clientConn.SetBufferLimit(h.clusterInfo.ConnBufferLimitBytes())
 
 	return types.CreateConnectionData{
 		Connection: clientConn,
 		HostInfo:   &h.hostInfo,
 	}
-}
-
-func (h *host) Counters() types.HostStats {
-	return types.HostStats{}
-}
-
-func (h *host) Gauges() types.HostStats {
-	return types.HostStats{}
 }
 
 // health:0, unhealth:1
@@ -182,12 +149,6 @@ func (h *host) Health() bool {
 	return h.healthFlags == 0
 }
 
-func (h *host) SetHealthChecker(healthCheck types.HealthCheckHostMonitor) {
-}
-
-func (h *host) SetOutlierDetector(outlierDetector types.DetectorHostMonitor) {
-}
-
 func (h *host) Weight() uint32 {
 	return h.weight
 }
@@ -206,25 +167,35 @@ func (h *host) SetUsed(used bool) {
 
 // HostInfo
 type hostInfo struct {
-	hostname      string
-	address       net.Addr
-	addressString string
-	canary        bool
-	clusterInfo   types.ClusterInfo
-	stats         types.HostStats
-	metaData      types.RouteMetaData
+	hostname       string
+	address        net.Addr
+	addressString  string
+	canary         bool
+	clusterInfo    types.ClusterInfo
+	stats          types.HostStats
+	metaData       types.RouteMetaData
+	originMetaData v2.Metadata
+	tlsDisable     bool
+	config         v2.Host
 
 	// TODO: locality, outlier, healthchecker
 }
 
 func newHostInfo(addr net.Addr, config v2.Host, clusterInfo types.ClusterInfo) hostInfo {
+	var name string
+	if clusterInfo != nil {
+		name = clusterInfo.Name()
+	}
 	return hostInfo{
-		address:       addr,
-		addressString: config.Address,
-		hostname:      config.Hostname,
-		clusterInfo:   clusterInfo,
-		stats:         newHostStats(config),
-		metaData:      GenerateHostMetadata(config.MetaData),
+		address:        addr,
+		addressString:  config.Address,
+		hostname:       config.Hostname,
+		clusterInfo:    clusterInfo,
+		stats:          newHostStats(name, config.Address),
+		metaData:       GenerateHostMetadata(config.MetaData),
+		originMetaData: config.MetaData,
+		tlsDisable:     config.TLSDisable,
+		config:         config,
 	}
 }
 
@@ -240,16 +211,12 @@ func (hi *hostInfo) Metadata() types.RouteMetaData {
 	return hi.metaData
 }
 
+func (hi *hostInfo) OriginMetaData() v2.Metadata {
+	return hi.originMetaData
+}
+
 func (hi *hostInfo) ClusterInfo() types.ClusterInfo {
 	return hi.clusterInfo
-}
-
-func (hi *hostInfo) OutlierDetector() types.DetectorHostMonitor {
-	return nil
-}
-
-func (hi *hostInfo) HealthChecker() types.HealthCheckHostMonitor {
-	return nil
 }
 
 func (hi *hostInfo) Address() net.Addr {
@@ -262,6 +229,9 @@ func (hi *hostInfo) AddressString() string {
 
 func (hi *hostInfo) HostStats() types.HostStats {
 	return hi.stats
+}
+func (hi *hostInfo) Config() v2.Host {
+	return hi.config
 }
 
 // GenerateHostMetadata

@@ -19,30 +19,32 @@ package proxy
 
 import (
 	"math/rand"
-	"strconv"
 	"time"
 
+	"github.com/alipay/sofa-mosn/pkg/protocol"
 	"github.com/alipay/sofa-mosn/pkg/types"
 )
 
 type retryState struct {
-	retryPolicy     types.RetryPolicy
-	requestHeaders  map[string]string
-	cluster         types.ClusterInfo
-	retryOn         bool
-	retiesRemaining uint32
-	retryFunc       func()
-	retryTimer      *timer
+	retryPolicy      types.RetryPolicy
+	requestHeaders   types.HeaderMap // TODO: support retry policy by header
+	cluster          types.ClusterInfo
+	retryOn          bool
+	retiesRemaining  uint32
+	retryFunc        func()
+	retryTimer       *timer
+	upstreamProtocol types.Protocol
 }
 
 func newRetryState(retryPolicy types.RetryPolicy,
-	requestHeaders map[string]string, cluster types.ClusterInfo) *retryState {
+	requestHeaders types.HeaderMap, cluster types.ClusterInfo, proto types.Protocol) *retryState {
 	rs := &retryState{
-		retryPolicy:     retryPolicy,
-		requestHeaders:  requestHeaders,
-		cluster:         cluster,
-		retryOn:         retryPolicy.RetryOn(),
-		retiesRemaining: 3,
+		retryPolicy:      retryPolicy,
+		requestHeaders:   requestHeaders,
+		cluster:          cluster,
+		retryOn:          retryPolicy.RetryOn(),
+		retiesRemaining:  3,
+		upstreamProtocol: proto,
 	}
 
 	if retryPolicy.NumRetries() > rs.retiesRemaining {
@@ -52,7 +54,7 @@ func newRetryState(retryPolicy types.RetryPolicy,
 	return rs
 }
 
-func (r *retryState) retry(headers map[string]string, reason types.StreamResetReason, doRetry func()) types.RetryCheckStatus {
+func (r *retryState) retry(headers types.HeaderMap, reason types.StreamResetReason, doRetry func()) types.RetryCheckStatus {
 	r.reset()
 
 	check := r.shouldRetry(headers, reason)
@@ -66,7 +68,7 @@ func (r *retryState) retry(headers map[string]string, reason types.StreamResetRe
 	return 0
 }
 
-func (r *retryState) shouldRetry(headers map[string]string, reason types.StreamResetReason) types.RetryCheckStatus {
+func (r *retryState) shouldRetry(headers types.HeaderMap, reason types.StreamResetReason) types.RetryCheckStatus {
 	if r.retiesRemaining == 0 {
 		return types.NoRetry
 	}
@@ -77,7 +79,7 @@ func (r *retryState) shouldRetry(headers map[string]string, reason types.StreamR
 		return types.NoRetry
 	}
 
-	if r.cluster.ResourceManager().Retries().CanCreate() {
+	if !r.cluster.ResourceManager().Retries().CanCreate() {
 		r.cluster.Stats().UpstreamRequestRetryOverflow.Inc(1)
 
 		return types.RetryOverflow
@@ -92,26 +94,32 @@ func (r *retryState) scheduleRetry(doRetry func()) *timer {
 	r.cluster.Stats().UpstreamRequestRetry.Inc(1)
 
 	// todo: use backoff alth
-	timeout := rand.Intn(10)
-	timer := newTimer(doRetry, time.Duration(timeout)*time.Second)
+	timeout := 1 + rand.Intn(10)
+	timer := newTimer(doRetry, time.Duration(timeout)*time.Millisecond)
 	timer.start()
 
 	return timer
 }
 
-func (r *retryState) doRetryCheck(headers map[string]string, reason types.StreamResetReason) bool {
+func (r *retryState) doRetryCheck(headers types.HeaderMap, reason types.StreamResetReason) bool {
 	if reason == types.StreamOverflow {
 		return false
 	}
 
 	if r.retryOn {
-		if code, ok := headers[types.HeaderStatus]; ok {
-			codeValue, _ := strconv.Atoi(code)
-
-			return codeValue >= 500
+		// TODO: add retry policy to decide retry or not. use default policy now
+		if headers != nil {
+			// default policy , mapping all headers to http status code
+			code, err := protocol.MappingHeaderStatusCode(r.upstreamProtocol, headers)
+			if err == nil {
+				return code >= 500
+			}
 		}
+		if reason == types.StreamConnectionFailed {
+			return true
+		}
+		// more policy
 
-		// todo: more conditions
 	}
 
 	return false
@@ -121,5 +129,6 @@ func (r *retryState) reset() {
 	if r.retryFunc != nil {
 		r.cluster.ResourceManager().Retries().Decrease()
 		r.retryFunc = nil
+		r.retryTimer.stop()
 	}
 }

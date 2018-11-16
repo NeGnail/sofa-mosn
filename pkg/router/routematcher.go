@@ -44,69 +44,67 @@ import (
 	"github.com/alipay/sofa-mosn/pkg/types"
 )
 
-func init() {
-	RegisterRouterConfigFactory(protocol.SofaRPC, NewRouteMatcher)
-	RegisterRouterConfigFactory(protocol.HTTP2, NewRouteMatcher)
-	RegisterRouterConfigFactory(protocol.HTTP1, NewRouteMatcher)
-	RegisterRouterConfigFactory(protocol.Xprotocol, NewRouteMatcher)
-}
-
 // NewRouteMatcher
 // New 'routeMatcher' according to config
-func NewRouteMatcher(config interface{}) (types.Routers, error) {
+func NewRouteMatcher(routerConfig *v2.RouterConfiguration) (types.Routers, error) {
+	if routerConfig == nil {
+		return nil, fmt.Errorf("NewRouteMatcher Error, routerConfig is nil")
+	}
+
+	if len(routerConfig.VirtualHosts) == 0 {
+		return nil, fmt.Errorf("NewRouteMatcher Error, virtualhosts is nil")
+
+	}
+
 	routerMatcher := &routeMatcher{
 		virtualHosts:                             make(map[string]types.VirtualHost),
 		wildcardVirtualHostSuffixes:              make(map[int]map[string]types.VirtualHost),
 		greaterSortedWildcardVirtualHostSuffixes: []int{},
 	}
 
-	if config, ok := config.(*v2.Proxy); ok {
-		for _, virtualHost := range config.VirtualHosts {
-			// if virtualHost is nil, it is a invalid config, panic in NewVirtualHostImpl
-			//if nil == virtualHost {
-			//	continue
-			//}
+	configImpl := NewConfigImpl(routerConfig)
 
-			vh, err := NewVirtualHostImpl(virtualHost, config.ValidateClusters)
-			if err != nil {
-				return nil, err
-			}
-			for _, domain := range virtualHost.Domains {
-				// Note: we use domain in lowercase
-				domain = strings.ToLower(domain)
+	for _, virtualHost := range routerConfig.VirtualHosts {
+		vh, err := NewVirtualHostImpl(virtualHost, false)
 
-				if domain == "*" {
-					if routerMatcher.defaultVirtualHost != nil {
-						return nil, fmt.Errorf("Only a single wildcard domain permitted")
-					}
-					log.StartLogger.Tracef("add route matcher default virtual host")
-					routerMatcher.defaultVirtualHost = vh
+		if err != nil {
+			return nil, err
+		}
+		vh.globalRouteConfig = configImpl
 
-				} else if len(domain) > 1 && "*" == domain[:1] {
-					// first key: wildcard's len
-					m, ok := routerMatcher.wildcardVirtualHostSuffixes[len(domain)-1]
-					if !ok {
-						m = map[string]types.VirtualHost{}
-						routerMatcher.wildcardVirtualHostSuffixes[len(domain)-1] = m
-					}
-					// add check, different from envoy
-					// exactly same wildcard domain is unique
-					wildcard := domain[1:]
-					if _, ok := m[wildcard]; ok {
-						return nil, fmt.Errorf("Only unique values for domains are permitted, get duplicate domain = %s", domain)
-					}
-					m[wildcard] = vh
+		for _, domain := range virtualHost.Domains {
+			// Note: we use domain in lowercase
+			domain = strings.ToLower(domain)
 
-				} else {
-					if _, ok := routerMatcher.virtualHosts[domain]; ok {
-						return nil, fmt.Errorf("Only unique values for domains are permitted, get duplicate domain = %s", domain)
-					}
-					routerMatcher.virtualHosts[domain] = vh
+			if domain == "*" {
+				if routerMatcher.defaultVirtualHost != nil {
+					return nil, fmt.Errorf("NewRouteMatcher Error, only a single wildcard domain permitted")
 				}
+				log.StartLogger.Tracef("add route matcher default virtual host")
+				routerMatcher.defaultVirtualHost = vh
+
+			} else if len(domain) > 1 && "*" == domain[:1] {
+				// first key: wildcard's len
+				m, ok := routerMatcher.wildcardVirtualHostSuffixes[len(domain)-1]
+				if !ok {
+					m = map[string]types.VirtualHost{}
+					routerMatcher.wildcardVirtualHostSuffixes[len(domain)-1] = m
+				}
+				// add check, different from envoy
+				// exactly same wildcard domain is unique
+				wildcard := domain[1:]
+				if _, ok := m[wildcard]; ok {
+					return nil, fmt.Errorf("NewRouteMatcher Error, only unique wildcard are permitted, but get duplicate: %s", domain)
+				}
+				m[wildcard] = vh
+
+			} else {
+				if _, ok := routerMatcher.virtualHosts[domain]; ok {
+					return nil, fmt.Errorf("NewRouteMatcher Error, only unique values for domains are permitted,but get duplicate:%s", domain)
+				}
+				routerMatcher.virtualHosts[domain] = vh
 			}
 		}
-	} else {
-		return nil, fmt.Errorf("NewRouteMatcher failure: config is not in type of *v2.Proxy")
 	}
 
 	for key := range routerMatcher.wildcardVirtualHostSuffixes {
@@ -128,7 +126,7 @@ type routeMatcher struct {
 }
 
 // Routing with Virtual Host
-func (rm *routeMatcher) Route(headers map[string]string, randomValue uint64) types.Route {
+func (rm *routeMatcher) Route(headers types.HeaderMap, randomValue uint64) types.Route {
 	// First Step: Select VirtualHost with "host" in Headers form VirtualHost Array
 	log.StartLogger.Tracef("routing header = %v,randomValue=%v", headers, randomValue)
 	virtualHost := rm.findVirtualHost(headers)
@@ -148,13 +146,29 @@ func (rm *routeMatcher) Route(headers map[string]string, randomValue uint64) typ
 	return routerInstance
 }
 
-func (rm *routeMatcher) findVirtualHost(headers map[string]string) types.VirtualHost {
+// GetAllRoutes returns all route that matched
+func (rm *routeMatcher) GetAllRoutes(headers types.HeaderMap, randomValue uint64) []types.Route {
+	log.StartLogger.Tracef("routing header = %v,randomValue=%v", headers, randomValue)
+	virtualHost := rm.findVirtualHost(headers)
+	if virtualHost == nil {
+		log.DefaultLogger.Errorf("No VirtualHost Found when Routing, Request Headers = %+v", headers)
+		return nil
+	}
+	routers := virtualHost.GetAllRoutesFromEntries(headers, randomValue)
+	if routers == nil {
+		log.DefaultLogger.Errorf("No Router Instance Found when Routing, Request Headers = %+v", headers)
+	}
+	return routers
+}
+
+func (rm *routeMatcher) findVirtualHost(headers types.HeaderMap) types.VirtualHost {
 	if len(rm.virtualHosts) == 0 && rm.defaultVirtualHost != nil {
 		log.StartLogger.Tracef("route matcher find virtual host return default virtual host")
 		return rm.defaultVirtualHost
 	}
 
-	host := strings.ToLower(headers[strings.ToLower(protocol.MosnHeaderHostKey)])
+	hostHeader, _ := headers.Get(strings.ToLower(protocol.MosnHeaderHostKey))
+	host := strings.ToLower(hostHeader)
 
 	// for service, header["host"] == header["service"] == servicename
 	// or use only a unique key for sofa's virtual host
@@ -191,7 +205,3 @@ func (rm *routeMatcher) findWildcardVirtualHost(host string) types.VirtualHost {
 
 	return nil
 }
-
-func (rm *routeMatcher) AddRouter(routerName string) {}
-
-func (rm *routeMatcher) DelRouter(routerName string) {}

@@ -40,7 +40,6 @@ type shard struct {
 }
 
 type shardWorkerPool struct {
-	sync.Mutex
 	// workerFunc should never exit, always try to acquire jobs from jobs channel
 	workerFunc WorkerFunc
 	shards     []*shard
@@ -78,8 +77,8 @@ func (pool *shardWorkerPool) Init() {
 	}
 }
 
-func (pool *shardWorkerPool) Shard(source int) int {
-	return source % pool.numShards
+func (pool *shardWorkerPool) Shard(source uint32) uint32 {
+	return source % uint32(pool.numShards)
 }
 
 func (pool *shardWorkerPool) Offer(job ShardJob) {
@@ -158,4 +157,44 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+type workerPool struct {
+	work chan func()
+	sem  chan struct{}
+}
+
+// NewWorkerPool create a worker pool
+func NewWorkerPool(size int) WorkerPool {
+	return &workerPool{
+		work: make(chan func()),
+		sem:  make(chan struct{}, size),
+	}
+}
+
+func (p *workerPool) Schedule(task func()) {
+	select {
+	case p.work <- task:
+	case p.sem <- struct{}{}:
+		go p.spawnWorker(task)
+	}
+}
+
+func (p *workerPool) ScheduleAlways(task func()) {
+	select {
+	case p.work <- task:
+	case p.sem <- struct{}{}:
+		go p.spawnWorker(task)
+	default:
+		// new temp goroutine for task execution
+		go task()
+	}
+}
+
+func (p *workerPool) spawnWorker(task func()) {
+	defer func() { <-p.sem }()
+	for {
+		task()
+		task = <-p.work
+	}
 }

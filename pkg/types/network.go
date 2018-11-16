@@ -19,10 +19,10 @@ package types
 
 import (
 	"context"
-	"crypto/tls"
 	"net"
 
 	"github.com/alipay/sofa-mosn/pkg/api/v2"
+	"github.com/alipay/sofa-mosn/pkg/mtls/crypto/tls"
 	"github.com/rcrowley/go-metrics"
 )
 
@@ -43,7 +43,7 @@ import (
 //   Core model in network layer are listener and connection. Listener listens specified port, waiting for new connections.
 //   Both listener and connection have a extension mechanism, implemented as listener and filter chain, which are used to fill in customized logic.
 //   Event listeners are used to subscribe important event of Listener and Connection. Method in listener will be called on event occur, but not effect the control flow.
-//   Filters are called on event occurs, it also returns a status to effect control flow. Currently 2 states are used: Continue to let it go, StopIteration to stop the control flow.
+//   Filters are called on event occurs, it also returns a status to effect control flow. Currently 2 states are used: Continue to let it go, Stop to stop the control flow.
 //   Filter has a callback handler to interactive with core model. For example, ReadFilterCallbacks can be used to continue filter chain in connection, on which is in a stopped state.
 //
 //   Listener:
@@ -74,17 +74,13 @@ import (
 //    --------------------------------------------------
 //
 
-// The prefix
-const (
-	ListenerStatsPrefix = "listener.%d."
-)
-
 // Listener is a wrapper of tcp listener
 type Listener interface {
 	// Return config which initialize this listener
-	Config() *v2.ListenerConfig
+	Config() *v2.Listener
 
-	SetConfig(config *v2.ListenerConfig)
+	// Set listener config
+	SetConfig(config *v2.Listener)
 
 	// Name returns the listener's name
 	Name() string
@@ -102,6 +98,7 @@ type Listener interface {
 	// ListenerTag returns the listener's tag, whichi the listener should use for connection handler tracking.
 	ListenerTag() uint64
 
+	// Set listener tag
 	SetListenerTag(tag uint64)
 
 	// ListenerFD returns a copy a listener fd
@@ -110,9 +107,14 @@ type Listener interface {
 	// PerConnBufferLimitBytes returns the limit bytes per connection
 	PerConnBufferLimitBytes() uint32
 
-	SetePerConnBufferLimitBytes(limitBytes uint32)
+	// Set limit bytes per connection
+	SetPerConnBufferLimitBytes(limitBytes uint32)
 
-	SethandOffRestoredDestinationConnections(restoredDestation bool)
+	// Set if listener should hand off restored destination connections
+	SetHandOffRestoredDestinationConnections(restoredDestation bool)
+
+	// Get if listener hand off restored destination connections
+	HandOffRestoredDestinationConnections() bool
 
 	// SetListenerCallbacks set a listener event listener
 	SetListenerCallbacks(cb ListenerEventListener)
@@ -126,7 +128,7 @@ type Listener interface {
 
 //
 type TLSContextManager interface {
-	Conn(c net.Conn) net.Conn
+	Conn(net.Conn) net.Conn
 	Enabled() bool
 	Config() *tls.Config
 }
@@ -148,8 +150,8 @@ type FilterStatus string
 
 // FilterStatus types
 const (
-	Continue      FilterStatus = "Continue"
-	StopIteration FilterStatus = "StopIteration"
+	Continue FilterStatus = "Continue"
+	Stop     FilterStatus = "Stop"
 )
 
 type ListenerFilter interface {
@@ -172,12 +174,6 @@ type ListenerFilterCallbacks interface {
 // Note: unsupport now
 type ListenerFilterManager interface {
 	AddListenerFilter(lf *ListenerFilter)
-}
-
-type BufferWatermarkListener interface {
-	OnHighWatermark()
-
-	OnLowWatermark()
 }
 
 // Connection status
@@ -300,10 +296,10 @@ type Connection interface {
 
 // ConnectionStats is a group of connection metrics
 type ConnectionStats struct {
-	ReadTotal    metrics.Counter
-	ReadCurrent  metrics.Gauge
-	WriteTotal   metrics.Counter
-	WriteCurrent metrics.Gauge
+	ReadTotal     metrics.Counter
+	ReadBuffered  metrics.Gauge
+	WriteTotal    metrics.Counter
+	WriteBuffered metrics.Gauge
 }
 
 // ClientConnection is a wrapper of Connection
@@ -354,7 +350,7 @@ type ConnectionHandler interface {
 	// AddOrUpdateListener
 	// adds a listener into the ConnectionHandler or
 	// update a listener
-	AddOrUpdateListener(lc *v2.ListenerConfig, networkFiltersFactories []NetworkFilterChainFactory,
+	AddOrUpdateListener(lc *v2.Listener, networkFiltersFactories []NetworkFilterChainFactory,
 		streamFiltersFactories []StreamFilterChainFactory) (ListenerEventListener, error)
 
 	// StartListener starts a listener by the specified listener tag
@@ -440,7 +436,7 @@ type FilterManager interface {
 	OnRead()
 
 	// OnWrite is called before data write
-	OnWrite() FilterStatus
+	OnWrite(buffer []IoBuffer) FilterStatus
 }
 
 type FilterChainFactory interface {

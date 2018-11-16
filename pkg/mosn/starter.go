@@ -25,11 +25,12 @@ import (
 
 	"github.com/alipay/sofa-mosn/pkg/api/v2"
 	"github.com/alipay/sofa-mosn/pkg/config"
-	"github.com/alipay/sofa-mosn/pkg/filter"
+	_ "github.com/alipay/sofa-mosn/pkg/filter/network/connectionmanager"
 	"github.com/alipay/sofa-mosn/pkg/log"
 	"github.com/alipay/sofa-mosn/pkg/network"
-	"github.com/alipay/sofa-mosn/pkg/protocol"
+	"github.com/alipay/sofa-mosn/pkg/router"
 	"github.com/alipay/sofa-mosn/pkg/server"
+	"github.com/alipay/sofa-mosn/pkg/stats"
 	"github.com/alipay/sofa-mosn/pkg/types"
 	"github.com/alipay/sofa-mosn/pkg/upstream/cluster"
 	"github.com/alipay/sofa-mosn/pkg/xds"
@@ -39,6 +40,7 @@ import (
 type Mosn struct {
 	servers        []server.Server
 	clustermanager types.ClusterManager
+	routerManager  types.RouterManager
 }
 
 // NewMosn
@@ -85,6 +87,9 @@ func NewMosn(c *config.MOSNConfig) *Mosn {
 		m.clustermanager = cluster.NewClusterManager(nil, clusters, clusterMap, c.ClusterManager.AutoDiscovery, c.ClusterManager.RegistryUseHealthCheck)
 	}
 
+	// initialize the routerManager
+	m.routerManager = router.NewRouterManager()
+
 	for _, serverConfig := range c.Servers {
 		//1. server config prepare
 		//server config
@@ -109,20 +114,28 @@ func NewMosn(c *config.MOSNConfig) *Mosn {
 			for _, listenerConfig := range serverConfig.Listeners {
 				// parse ListenerConfig
 				lc := config.ParseListenerConfig(&listenerConfig, inheritListeners)
-				lc.DisableConnIo = listenerDisableIO(&lc.FilterChains[0])
+				lc.DisableConnIo = config.GetListenerDisableIO(&lc.FilterChains[0])
 
-				nfcf := getNetworkFilters(&lc.FilterChains[0])
+				// parse routers from connection_manager filter and add it the routerManager
+				if routerConfig := config.ParseRouterConfiguration(&lc.FilterChains[0]); routerConfig.RouterConfigName != "" {
+					m.routerManager.AddOrUpdateRouters(routerConfig)
+				}
+
+				var nfcf []types.NetworkFilterChainFactory
+				var sfcf []types.StreamFilterChainFactory
 
 				// Note: as we use fasthttp and net/http2.0, the IO we created in mosn should be disabled
 				// network filters
-				if lc.HandOffRestoredDestinationConnections {
-					srv.AddListener(lc, nil, nil)
-					continue
+				if !lc.HandOffRestoredDestinationConnections {
+					// network and stream filters
+					nfcf = config.GetNetworkFilters(&lc.FilterChains[0])
+					sfcf = config.GetStreamFilters(lc.StreamFilters)
 				}
 
-				//stream filters
-				sfcf := config.GetStreamFilters(lc.StreamFilters)
-				srv.AddListener(lc, nfcf, sfcf)
+				_, err := srv.AddListener(lc, nfcf, sfcf)
+				if err != nil {
+					log.StartLogger.Fatalf("AddListener error:%s", err.Error())
+				}
 			}
 		}
 		m.servers = append(m.servers, srv)
@@ -142,6 +155,8 @@ func NewMosn(c *config.MOSNConfig) *Mosn {
 	network.TransferTimeout = server.GracefulTimeout
 	// transfer old mosn connections
 	go network.TransferServer(m.servers[0].Handler())
+	// transfer old mosn mertrics, none-block
+	go stats.TransferServer(server.GracefulTimeout, nil)
 
 	return m
 }
@@ -162,7 +177,7 @@ func (m *Mosn) Close() {
 }
 
 // Start mosn project
-// stap1. NewMosn
+// step1. NewMosn
 // step2. Start Mosn
 func Start(c *config.MOSNConfig, serviceCluster string, serviceNode string) {
 	log.StartLogger.Infof("start by config : %+v", c)
@@ -181,32 +196,6 @@ func Start(c *config.MOSNConfig, serviceCluster string, serviceNode string) {
 	xdsClient.Stop()
 }
 
-// getNetworkFilter
-// Used to parse proxy from config
-func getNetworkFilters(c *v2.FilterChain) []types.NetworkFilterChainFactory {
-	var factories []types.NetworkFilterChainFactory
-	for _, f := range c.Filters {
-		factory, err := filter.CreateNetworkFilterChainFactory(f.Name, f.Config, false)
-		if err != nil {
-			log.StartLogger.Fatalln("network filter create failed :", err)
-		}
-		factories = append(factories, factory)
-	}
-	return factories
-}
-func listenerDisableIO(c *v2.FilterChain) bool {
-	for _, f := range c.Filters {
-		if f.Name == v2.DEFAULT_NETWORK_FILTER {
-			if downstream, ok := f.Config["downstream_protocol"]; ok {
-				if downstream == string(protocol.HTTP2) || downstream == string(protocol.HTTP1) {
-					return true
-				}
-			}
-		}
-	}
-	return false
-}
-
 type clusterManagerFilter struct {
 	cccb types.ClusterConfigFactoryCb
 	chcb types.ClusterHostFactoryCb
@@ -217,27 +206,35 @@ func (cmf *clusterManagerFilter) OnCreated(cccb types.ClusterConfigFactoryCb, ch
 	cmf.chcb = chcb
 }
 
-func getInheritListeners() []*v2.ListenerConfig {
-	if os.Getenv("_MOSN_GRACEFUL_RESTART") == "true" {
-		count, _ := strconv.Atoi(os.Getenv("_MOSN_INHERIT_FD"))
-		listeners := make([]*v2.ListenerConfig, count)
+func getInheritListeners() []*v2.Listener {
+	if os.Getenv(types.GracefulRestart) == "true" {
+		count, _ := strconv.Atoi(os.Getenv(types.InheritFd))
+		listeners := make([]*v2.Listener, count)
 
 		log.StartLogger.Infof("received %d inherit fds", count)
 
 		for idx := 0; idx < count; idx++ {
-			//because passed listeners fd's index starts from 3
-			fd := uintptr(3 + idx)
-			file := os.NewFile(fd, "")
-			fileListener, err := net.FileListener(file)
-			if err != nil {
-				log.StartLogger.Errorf("recover listener from fd %d failed: %s", fd, err)
-				continue
-			}
-			if listener, ok := fileListener.(*net.TCPListener); ok {
-				listeners[idx] = &v2.ListenerConfig{Addr: listener.Addr(), InheritListener: listener}
-			} else {
-				log.StartLogger.Errorf("listener recovered from fd %d is not a tcp listener", fd)
-			}
+			func() {
+				//because passed listeners fd's index starts from 3
+				fd := uintptr(3 + idx)
+				file := os.NewFile(fd, "")
+				if file == nil {
+					log.StartLogger.Errorf("create new file from fd %d failed", fd)
+					return
+				}
+				defer file.Close()
+
+				fileListener, err := net.FileListener(file)
+				if err != nil {
+					log.StartLogger.Errorf("recover listener from fd %d failed: %s", fd, err)
+					return
+				}
+				if listener, ok := fileListener.(*net.TCPListener); ok {
+					listeners[idx] = &v2.Listener{Addr: listener.Addr(), InheritListener: listener}
+				} else {
+					log.StartLogger.Errorf("listener recovered from fd %d is not a tcp listener", fd)
+				}
+			}()
 		}
 		return listeners
 	}

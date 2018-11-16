@@ -26,8 +26,7 @@ import (
 
 func Test_getWeightedClusterEntryAndVerify(t *testing.T) {
 	type args struct {
-		totalClusterWeight uint32
-		weightedClusters   []v2.WeightedCluster
+		weightedClusters []v2.WeightedCluster
 	}
 
 	type result struct {
@@ -43,11 +42,10 @@ func Test_getWeightedClusterEntryAndVerify(t *testing.T) {
 		{
 			name: "case1",
 			args: args{
-				totalClusterWeight: 100,
 				weightedClusters: []v2.WeightedCluster{
-					{Cluster: v2.ClusterWeight{Name: "c1", Weight: 50, MetadataMatch: v2.Metadata{"label": "green", "version": "v1"}}},
-					{Cluster: v2.ClusterWeight{Name: "c2", Weight: 30, MetadataMatch: v2.Metadata{"label": "blue", "version": "v2"}}},
-					{Cluster: v2.ClusterWeight{Name: "c3", Weight: 20, MetadataMatch: v2.Metadata{"label": "gray", "version": "v0"}}},
+					{Cluster: v2.ClusterWeight{ClusterWeightConfig: v2.ClusterWeightConfig{Name: "c1", Weight: 50}, MetadataMatch: v2.Metadata{"label": "green", "version": "v1"}}},
+					{Cluster: v2.ClusterWeight{ClusterWeightConfig: v2.ClusterWeightConfig{Name: "c2", Weight: 30}, MetadataMatch: v2.Metadata{"label": "blue", "version": "v2"}}},
+					{Cluster: v2.ClusterWeight{ClusterWeightConfig: v2.ClusterWeightConfig{Name: "c3", Weight: 20}, MetadataMatch: v2.Metadata{"label": "gray", "version": "v0"}}},
 				},
 			},
 			want: result{
@@ -71,31 +69,163 @@ func Test_getWeightedClusterEntryAndVerify(t *testing.T) {
 				},
 			},
 		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			entry, _ := getWeightedClusterEntry(tt.args.weightedClusters)
+			if !reflect.DeepEqual(entry, tt.want.value) {
+				t.Errorf("get weighted cluster entry and verify name = %s got1 = %v, want %v", tt.name, entry, tt.want.value)
+			}
+		})
+	}
+}
+
+func Test_getHeaderParser(t *testing.T) {
+
+	type args struct {
+		headersToAdd    []*v2.HeaderValueOption
+		headersToRemove []string
+	}
+
+	FALSE := false
+
+	tests := []struct {
+		name string
+		args args
+		want *headerParser
+	}{
 		{
 			name: "case1",
 			args: args{
-				totalClusterWeight: 100,
-				weightedClusters: []v2.WeightedCluster{
-					{Cluster: v2.ClusterWeight{Name: "c1", Weight: 50, MetadataMatch: v2.Metadata{"label": "green", "version": "v1"}}},
-					{Cluster: v2.ClusterWeight{Name: "c2", Weight: 30, MetadataMatch: v2.Metadata{"label": "blue", "version": "v2"}}},
-					{Cluster: v2.ClusterWeight{Name: "c3", Weight: 10, MetadataMatch: v2.Metadata{"label": "gray", "version": "v0"}}},
+				headersToAdd: []*v2.HeaderValueOption{
+					{
+						Header: &v2.HeaderValue{
+							Key:   "LEVEL",
+							Value: "1",
+						},
+						Append: &FALSE,
+					},
 				},
+				headersToRemove: []string{"STATUS"},
 			},
-			want: result{
-				valid: false,
-				value: nil,
+			want: &headerParser{
+				headersToAdd: []*headerPair{
+					{
+						headerName: &lowerCaseString{"level"},
+						headerFormatter: &plainHeaderFormatter{
+							isAppend:    false,
+							staticValue: "1",
+						},
+					},
+				},
+				headersToRemove: []*lowerCaseString{{"status"}},
 			},
+		},
+		{
+			name: "case2",
+			args: args{
+				headersToAdd:    nil,
+				headersToRemove: nil,
+			},
+			want: nil,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			entry, ok := getWeightedClusterEntryAndVerify(tt.args.totalClusterWeight, tt.args.weightedClusters)
-			if ok != tt.want.valid {
-				t.Errorf("get weighted cluster entry and verify name = %s got = %v, want %v", tt.name, ok, tt.want.valid)
+			if got := getHeaderParser(tt.args.headersToAdd, tt.args.headersToRemove); !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("getHeaderParser(headersToAdd []*v2.HeaderValueOption, headersToRemove []string) = %v, want %v", got, tt.want)
 			}
-			if !reflect.DeepEqual(entry, tt.want.value) {
-				t.Errorf("get weighted cluster entry and verify name = %s got1 = %v, want %v", tt.want, entry, tt.want.value)
+		})
+	}
+}
+
+func Test_getHeaderPair(t *testing.T) {
+
+	type args struct {
+		headersToAdd []*v2.HeaderValueOption
+	}
+
+	FALSE := false
+
+	tests := []struct {
+		name string
+		args args
+		want []*headerPair
+	}{
+		{
+			name: "case1",
+			args: args{
+				headersToAdd: []*v2.HeaderValueOption{
+					{
+						Header: &v2.HeaderValue{
+							Key:   "LEVEL",
+							Value: "1",
+						},
+						Append: &FALSE,
+					},
+				},
+			},
+			want: []*headerPair{
+				{
+					headerName: &lowerCaseString{"level"},
+					headerFormatter: &plainHeaderFormatter{
+						isAppend:    false,
+						staticValue: "1",
+					},
+				},
+			},
+		},
+		{
+			name: "case2",
+			args: args{
+				headersToAdd: nil,
+			},
+			want: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := getHeaderPair(tt.args.headersToAdd); !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("getHeaderPair(headersToAdd []*v2.HeaderValueOption) = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func Test_getHeadersToRemove(t *testing.T) {
+
+	type args struct {
+		headersToRemove []string
+	}
+
+	tests := []struct {
+		name string
+		args args
+		want []*lowerCaseString
+	}{
+		{
+			name: "case1",
+			args: args{
+				headersToRemove: []string{"STATUS"},
+			},
+			want: []*lowerCaseString{{"status"}},
+		},
+		{
+			name: "case2",
+			args: args{
+				headersToRemove: nil,
+			},
+			want: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := getHeadersToRemove(tt.args.headersToRemove); !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("getHeadersToRemove(headersToRemove []string) = %v, want %v", got, tt.want)
 			}
 		})
 	}

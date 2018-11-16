@@ -25,7 +25,6 @@ import (
 
 	"github.com/alipay/sofa-mosn/pkg/api/v2"
 	"github.com/alipay/sofa-mosn/pkg/log"
-	"github.com/alipay/sofa-mosn/pkg/tls"
 	"github.com/alipay/sofa-mosn/pkg/types"
 )
 
@@ -40,11 +39,10 @@ type listener struct {
 	cb                                    types.ListenerEventListener
 	rawl                                  *net.TCPListener
 	logger                                log.Logger
-	tlsMng                                types.TLSContextManager
-	config                                *v2.ListenerConfig
+	config                                *v2.Listener
 }
 
-func NewListener(lc *v2.ListenerConfig, logger log.Logger) types.Listener {
+func NewListener(lc *v2.Listener, logger log.Logger) types.Listener {
 
 	l := &listener{
 		name:                                  lc.Name,
@@ -61,20 +59,14 @@ func NewListener(lc *v2.ListenerConfig, logger log.Logger) types.Listener {
 		//inherit old process's listener
 		l.rawl = lc.InheritListener
 	}
-	mgr, err := tls.NewTLSServerContextManager(lc, l, logger)
-	if err != nil {
-		logger.Fatalf("create tls context manager failed, %v", err)
-	}
-	l.tlsMng = mgr
-
 	return l
 }
 
-func (l *listener) Config() *v2.ListenerConfig {
+func (l *listener) Config() *v2.Listener {
 	return l.config
 }
 
-func (l *listener) SetConfig(config *v2.ListenerConfig) {
+func (l *listener) SetConfig(config *v2.Listener) {
 	l.config = config
 }
 
@@ -149,7 +141,7 @@ func (l *listener) PerConnBufferLimitBytes() uint32 {
 	return l.perConnBufferLimitBytes
 }
 
-func (l *listener) SetePerConnBufferLimitBytes(limitBytes uint32) {
+func (l *listener) SetPerConnBufferLimitBytes(limitBytes uint32) {
 	l.perConnBufferLimitBytes = limitBytes
 }
 
@@ -161,8 +153,12 @@ func (l *listener) GetListenerCallbacks() types.ListenerEventListener {
 	return l.cb
 }
 
-func (l *listener) SethandOffRestoredDestinationConnections(restoredDestation bool) {
+func (l *listener) SetHandOffRestoredDestinationConnections(restoredDestation bool) {
 	l.handOffRestoredDestinationConnections = restoredDestation
+}
+
+func (l *listener) HandOffRestoredDestinationConnections() bool {
+	return l.handOffRestoredDestinationConnections
 }
 
 func (l *listener) Close(lctx context.Context) error {
@@ -199,10 +195,6 @@ func (l *listener) accept(lctx context.Context) error {
 				debug.PrintStack()
 			}
 		}()
-
-		if l.tlsMng != nil && l.tlsMng.Enabled() {
-			rawc = l.tlsMng.Conn(rawc)
-		}
 
 		l.cb.OnAccept(rawc, l.handOffRestoredDestinationConnections, nil, nil, nil)
 	}()

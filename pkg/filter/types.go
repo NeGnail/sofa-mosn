@@ -17,10 +17,12 @@
 
 package filter
 
-import "github.com/alipay/sofa-mosn/pkg/types"
+import (
+	"github.com/alipay/sofa-mosn/pkg/types"
+)
 
 // StreamFilterFactoryCreator creates a StreamFilterChainFactory according to config
 type StreamFilterFactoryCreator func(config map[string]interface{}) (types.StreamFilterChainFactory, error)
 
 // NetworkFilterFactoryCreator creates a NetworkFilterChainFactory according to config
-type NetworkFilterFactoryCreator func(config map[string]interface{}, isV2 bool) (types.NetworkFilterChainFactory, error)
+type NetworkFilterFactoryCreator func(config map[string]interface{}) (types.NetworkFilterChainFactory, error)

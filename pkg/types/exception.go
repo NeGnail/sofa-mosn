@@ -29,8 +29,8 @@ const (
 	HeaderTryTimeout    = "x-mosn-try-timeout"
 	HeaderException     = "x-mosn-exception"
 	HeaderStremEnd      = "x-mosn-endstream"
-	HeaderRpcService    = "x-mosn-rpc-service"
-	HeaderRpcMethod     = "x-mosn-rpc-method"
+	HeaderRPCService    = "x-mosn-rpc-service"
+	HeaderRPCMethod     = "x-mosn-rpc-method"
 )
 
 // Error messages
@@ -47,7 +47,8 @@ const (
 	DeserialExceptionCode int = 3
 	SuccessCode           int = 200
 	RouterUnavailableCode int = 404
-	NoHealthUpstreamCode  int = 500
+	NoHealthUpstreamCode  int = 502
 	UpstreamOverFlowCode  int = 503
 	TimeoutExceptionCode  int = 504
+	LimitExceededCode     int = 509
 )

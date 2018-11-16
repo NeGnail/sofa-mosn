@@ -24,14 +24,15 @@ import (
 	"testing"
 
 	"github.com/alipay/sofa-mosn/pkg/log"
+	"time"
 )
 
 type TestJob struct {
 	i uint32
 }
 
-func (t *TestJob) Source() int {
-	return int(t.i)
+func (t *TestJob) Source() uint32 {
+	return t.i
 }
 
 // TestJobOrder test worker pool's event dispatch functionality, which should ensure the FIFO order
@@ -82,6 +83,11 @@ func TestJobOrder(t *testing.T) {
 	}
 
 	wg.Wait()
+
+	// wait flush end for codecov
+	for atomic.LoadUint32(&pool.(*shardWorkerPool).schedule) != 0 {
+		time.Sleep(time.Millisecond * 10)
+	}
 }
 
 func eventProcess(b *testing.B) {
@@ -220,9 +226,9 @@ func eventProcessWithUnboundedChannel(b *testing.B) {
 				in <- &TestJob{i: atomic.AddUint32(&counter, uint32(shardsNum))}
 			}
 		}()
-		go func() {
-			consumer(i, out)
-		}()
+		go func(shard int) {
+			consumer(shard, out)
+		}(i)
 	}
 
 	wg.Wait()

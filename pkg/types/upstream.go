@@ -23,7 +23,7 @@ import (
 	"sort"
 
 	"github.com/alipay/sofa-mosn/pkg/api/v2"
-	"github.com/rcrowley/go-metrics"
+	metrics "github.com/rcrowley/go-metrics"
 )
 
 //   Below is the basic relation between clusterManager, cluster, hostSet, and hosts:
@@ -38,21 +38,21 @@ type ClusterManager interface {
 
 	SetInitializedCb(cb func())
 
-	// Clusters, return all cluster belongs to this clustermng
-	Clusters() map[string]Cluster
-
 	// Get, use to get the snapshot of a cluster
-	Get(context context.Context, cluster string) ClusterSnapshot
+	GetClusterSnapshot(context context.Context, cluster string) ClusterSnapshot
+
+	// PutClusterSnapshot release snapshot lock
+	PutClusterSnapshot(snapshot ClusterSnapshot)
 
 	// UpdateClusterHosts used to update cluster's hosts
 	// temp interface todo: remove it
 	UpdateClusterHosts(cluster string, priority uint32, hosts []v2.Host) error
 
 	// Get or Create tcp conn pool for a cluster
-	TCPConnForCluster(balancerContext LoadBalancerContext, cluster string) CreateConnectionData
+	TCPConnForCluster(balancerContext LoadBalancerContext, snapshot ClusterSnapshot) CreateConnectionData
 
 	// ConnPoolForCluster used to get protocol related conn pool
-	ConnPoolForCluster(balancerContext LoadBalancerContext, cluster string, protocol Protocol) ConnectionPool
+	ConnPoolForCluster(balancerContext LoadBalancerContext, snapshot ClusterSnapshot, protocol Protocol) ConnectionPool
 
 	// RemovePrimaryCluster used to remove cluster from set
 	RemovePrimaryCluster(cluster string) error
@@ -82,6 +82,8 @@ type ClusterSnapshot interface {
 	ClusterInfo() ClusterInfo
 
 	LoadBalancer() LoadBalancer
+
+	IsExistsHosts(metadata MetadataMatchCriteria) bool
 }
 
 // Cluster is a group of upstream hosts
@@ -99,8 +101,6 @@ type Cluster interface {
 
 	// return the cluster's health checker
 	HealthChecker() HealthChecker
-
-	OutlierDetector() Detector
 }
 
 // InitializePhase type
@@ -117,13 +117,14 @@ type MemberUpdateCallback func(priority uint32, hostsAdded []Host, hostsRemoved 
 
 // PrioritySet is a hostSet grouped by priority for a given cluster, for ease of load balancing.
 type PrioritySet interface {
-
 	// GetOrCreateHostSet returns the hostSet for this priority level, creating it if not exist.
 	GetOrCreateHostSet(priority uint32) HostSet
 
 	AddMemberUpdateCb(cb MemberUpdateCallback)
 
 	HostSetsByPriority() []HostSet
+
+	GetHostsInfo(priority uint32) []HostInfo
 }
 
 type HostPredicate func(Host) bool
@@ -164,10 +165,6 @@ type Host interface {
 	// Create a connection for this host.
 	CreateConnection(context context.Context) CreateConnectionData
 
-	Counters() HostStats
-
-	Gauges() HostStats
-
 	ClearHealthFlag(flag HealthFlag)
 
 	ContainHealthFlag(flag HealthFlag) bool
@@ -175,10 +172,6 @@ type Host interface {
 	SetHealthFlag(flag HealthFlag)
 
 	Health() bool
-
-	SetHealthChecker(healthCheck HealthCheckHostMonitor)
-
-	SetOutlierDetector(outlierDetector DetectorHostMonitor)
 
 	Weight() uint32
 
@@ -197,11 +190,10 @@ type HostInfo interface {
 
 	Metadata() RouteMetaData
 
+	// OriginMetaData used to get origin metadata, currently in map[string]string
+	OriginMetaData() v2.Metadata
+
 	ClusterInfo() ClusterInfo
-
-	OutlierDetector() DetectorHostMonitor
-
-	HealthChecker() HealthCheckHostMonitor
 
 	Address() net.Addr
 
@@ -209,18 +201,16 @@ type HostInfo interface {
 
 	HostStats() HostStats
 
+	Config() v2.Host
+
 	// TODO: add deploy locality
 }
 
 // HostStats defines a host's statistics information
 type HostStats struct {
-	Namespace                                      string
 	UpstreamConnectionTotal                        metrics.Counter
 	UpstreamConnectionClose                        metrics.Counter
 	UpstreamConnectionActive                       metrics.Counter
-	UpstreamConnectionTotalHTTP1                   metrics.Counter
-	UpstreamConnectionTotalHTTP2                   metrics.Counter
-	UpstreamConnectionTotalSofaRPC                 metrics.Counter
 	UpstreamConnectionConFail                      metrics.Counter
 	UpstreamConnectionLocalClose                   metrics.Counter
 	UpstreamConnectionRemoteClose                  metrics.Counter
@@ -299,13 +289,9 @@ type Resource interface {
 
 // ClusterStats defines a cluster's statistics information
 type ClusterStats struct {
-	Namespace                                      string
 	UpstreamConnectionTotal                        metrics.Counter
 	UpstreamConnectionClose                        metrics.Counter
 	UpstreamConnectionActive                       metrics.Counter
-	UpstreamConnectionTotalHTTP1                   metrics.Counter
-	UpstreamConnectionTotalHTTP2                   metrics.Counter
-	UpstreamConnectionTotalSofaRPC                 metrics.Counter
 	UpstreamConnectionConFail                      metrics.Counter
 	UpstreamConnectionRetry                        metrics.Counter
 	UpstreamConnectionLocalClose                   metrics.Counter
@@ -313,10 +299,8 @@ type ClusterStats struct {
 	UpstreamConnectionLocalCloseWithActiveRequest  metrics.Counter
 	UpstreamConnectionRemoteCloseWithActiveRequest metrics.Counter
 	UpstreamConnectionCloseNotify                  metrics.Counter
-	UpstreamBytesRead                              metrics.Counter
-	UpstreamBytesReadCurrent                       metrics.Gauge
-	UpstreamBytesWrite                             metrics.Counter
-	UpstreamBytesWriteCurrent                      metrics.Gauge
+	UpstreamBytesReadTotal                         metrics.Counter
+	UpstreamBytesWriteTotal                        metrics.Counter
 	UpstreamRequestTotal                           metrics.Counter
 	UpstreamRequestActive                          metrics.Counter
 	UpstreamRequestLocalReset                      metrics.Counter

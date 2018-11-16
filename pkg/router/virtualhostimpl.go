@@ -28,7 +28,11 @@ import (
 )
 
 func NewVirtualHostImpl(virtualHost *v2.VirtualHost, validateClusters bool) (*VirtualHostImpl, error) {
-	var virtualHostImpl = &VirtualHostImpl{virtualHostName: virtualHost.Name}
+	var virtualHostImpl = &VirtualHostImpl{
+		virtualHostName:       virtualHost.Name,
+		requestHeadersParser:  getHeaderParser(virtualHost.RequestHeadersToAdd, nil),
+		responseHeadersParser: getHeaderParser(virtualHost.ResponseHeadersToAdd, virtualHost.ResponseHeadersToRemove),
+	}
 
 	switch virtualHost.RequireTLS {
 	case "EXTERNALONLY":
@@ -41,45 +45,46 @@ func NewVirtualHostImpl(virtualHost *v2.VirtualHost, validateClusters bool) (*Vi
 
 	for _, route := range virtualHost.Routers {
 		routeRuleImplBase, err := NewRouteRuleImplBase(virtualHostImpl, &route)
+		var router RouteBase
+
 		if err != nil {
 			return nil, err
 		}
 
 		if route.Match.Prefix != "" {
-			virtualHostImpl.routes = append(virtualHostImpl.routes, &PrefixRouteRuleImpl{
-				routeRuleImplBase,
-				route.Match.Prefix,
-			})
-
+			router = &PrefixRouteRuleImpl{
+				RouteRuleImplBase: routeRuleImplBase,
+				prefix:            route.Match.Prefix,
+			}
 		} else if route.Match.Path != "" {
-			virtualHostImpl.routes = append(virtualHostImpl.routes, &PathRouteRuleImpl{
-				routeRuleImplBase,
-				route.Match.Path,
-			})
-
+			router = &PathRouteRuleImpl{
+				RouteRuleImplBase: routeRuleImplBase,
+				path:              route.Match.Path,
+			}
 		} else if route.Match.Regex != "" {
 			if regPattern, err := regexp.Compile(route.Match.Regex); err == nil {
-				virtualHostImpl.routes = append(virtualHostImpl.routes, &RegexRouteRuleImpl{
-					routeRuleImplBase,
-					route.Match.Regex,
-					*regPattern,
-				})
+				router = &RegexRouteRuleImpl{
+					RouteRuleImplBase: routeRuleImplBase,
+					regexStr:          route.Match.Regex,
+					regexPattern:      regPattern,
+				}
 			} else {
 				log.DefaultLogger.Errorf("Compile Regex Error")
 			}
 		} else {
 			// todo delete hack
-			// hack here to do sofa's routing policy
-			for _, header := range route.Match.Headers {
-				if header.Name == types.SofaRouteMatchKey {
-					virtualHostImpl.routes = append(virtualHostImpl.routes, &SofaRouteRuleImpl{
-						RouteRuleImplBase: routeRuleImplBase,
-						matchValue:        header.Value,
-					})
-				}
+			if router = defaultRouterRuleFactory(routeRuleImplBase, route.Match.Headers); router == nil {
+				log.DefaultLogger.Errorf("NewVirtualHostImpl failed, match default router error")
 			}
 		}
+
+		if router != nil {
+			virtualHostImpl.routes = append(virtualHostImpl.routes, router)
+		} else {
+			log.DefaultLogger.Errorf("NewVirtualHostImpl failed, no router type matched")
+		}
 	}
+
 	if len(virtualHostImpl.routes) == 0 {
 		return nil, errors.New("routes must specify one of prefix/path/regex/header")
 	}
@@ -96,7 +101,7 @@ func NewVirtualHostImpl(virtualHost *v2.VirtualHost, validateClusters bool) (*Vi
 				VirtualClusterEntry{
 					name:    vc.Name,
 					method:  optional.NewString(vc.Method),
-					pattern: *regxPattern,
+					pattern: regxPattern,
 				})
 		} else {
 			log.DefaultLogger.Errorf("Compile Error")
@@ -132,7 +137,7 @@ func (vh *VirtualHostImpl) RateLimitPolicy() types.RateLimitPolicy {
 	return nil
 }
 
-func (vh *VirtualHostImpl) GetRouteFromEntries(headers map[string]string, randomValue uint64) types.Route {
+func (vh *VirtualHostImpl) GetRouteFromEntries(headers types.HeaderMap, randomValue uint64) types.Route {
 	// todo check tls
 	for _, route := range vh.routes {
 		if routeEntry := route.Match(headers, randomValue); routeEntry != nil {
@@ -142,9 +147,18 @@ func (vh *VirtualHostImpl) GetRouteFromEntries(headers map[string]string, random
 
 	return nil
 }
+func (vh *VirtualHostImpl) GetAllRoutesFromEntries(headers types.HeaderMap, randomValue uint64) []types.Route {
+	var routes []types.Route
+	for _, route := range vh.routes {
+		if r := route.Match(headers, randomValue); r != nil {
+			routes = append(routes, r)
+		}
+	}
+	return routes
+}
 
 type VirtualClusterEntry struct {
-	pattern regexp.Regexp
+	pattern *regexp.Regexp
 	method  optional.String
 	name    string
 }

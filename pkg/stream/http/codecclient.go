@@ -20,9 +20,10 @@ package http
 import (
 	"container/list"
 	"context"
-	"crypto/tls"
 	"sync"
 	"sync/atomic"
+
+	"time"
 
 	str "github.com/alipay/sofa-mosn/pkg/stream"
 	"github.com/alipay/sofa-mosn/pkg/types"
@@ -53,27 +54,19 @@ type codecClient struct {
 	RemoteCloseFlag           bool
 }
 
-func NewHTTP1CodecClient(context context.Context, host types.HostInfo) str.CodecClient {
-	var isTLS bool
-	var tlsConfig *tls.Config
-	tlsMng := host.ClusterInfo().TLSMng()
-	if tlsMng != nil && tlsMng.Enabled() {
-		isTLS = true
-		tlsConfig = tlsMng.Config()
-	}
+func NewHTTP1CodecClient(context context.Context, ac *activeClient) str.CodecClient {
 	codecClient := &codecClient{
 		client: &fasthttp.HostClient{
-			Addr:          host.AddressString(),
-			DialDualStack: true,
-			IsTLS:         isTLS,
-			TLSConfig:     tlsConfig,
+			Addr:                          ac.pool.host.AddressString(),
+			DialDualStack:                 true,
+			Dial:                          ac.Dial,
+			MaxIdleConnDuration:           60 * time.Second,
+			DisableHeaderNamesNormalizing: true,
 		},
 		context:        context,
-		Host:           host,
+		Host:           ac.pool.host,
 		ActiveRequests: list.New(),
 	}
-
-	//codecClient.client.Dial = pool.createConnection
 
 	codecClient.Codec = newClientStreamWrapper(context, codecClient.client, codecClient, codecClient)
 	return codecClient
@@ -143,15 +136,22 @@ func (c *codecClient) OnEvent(event types.ConnectionEvent) {
 
 	if event.IsClose() {
 		var arNext *list.Element
+
+		c.AcrMux.RLock()
+		acReqs := make([]*activeRequest, 0, c.ActiveRequests.Len())
 		for ar := c.ActiveRequests.Front(); ar != nil; ar = arNext {
-			reason := types.StreamConnectionFailed
 			arNext = ar.Next()
+			acReqs = append(acReqs, ar.Value.(*activeRequest))
+		}
+		c.AcrMux.RUnlock()
+
+		for _, ac := range acReqs {
+			reason := types.StreamConnectionFailed
 
 			if c.ConnectedFlag {
 				reason = types.StreamConnectionTermination
 			}
-
-			ar.Value.(*activeRequest).requestEncoder.GetStream().ResetStream(reason)
+			ac.requestEncoder.GetStream().ResetStream(reason)
 		}
 	}
 }
@@ -160,7 +160,7 @@ func (c *codecClient) OnEvent(event types.ConnectionEvent) {
 func (c *codecClient) OnData(buffer types.IoBuffer) types.FilterStatus {
 	c.Codec.Dispatch(buffer)
 
-	return types.StopIteration
+	return types.Stop
 }
 
 func (c *codecClient) OnNewConnection() types.FilterStatus {
@@ -218,7 +218,7 @@ func (r *activeRequest) OnResetStream(reason types.StreamResetReason) {
 	r.codecClient.onReset(r, reason)
 }
 
-func (r *activeRequest) OnReceiveHeaders(context context.Context, headers map[string]string, endStream bool) {
+func (r *activeRequest) OnReceiveHeaders(context context.Context, headers types.HeaderMap, endStream bool) {
 	if endStream {
 		r.onPreDecodeComplete()
 	}
@@ -242,13 +242,13 @@ func (r *activeRequest) OnReceiveData(context context.Context, data types.IoBuff
 	}
 }
 
-func (r *activeRequest) OnReceiveTrailers(context context.Context, trailers map[string]string) {
+func (r *activeRequest) OnReceiveTrailers(context context.Context, trailers types.HeaderMap) {
 	r.onPreDecodeComplete()
 	r.responseDecoder.OnReceiveTrailers(context, trailers)
 	r.onDecodeComplete()
 }
 
-func (r *activeRequest) OnDecodeError(context context.Context, err error, headers map[string]string) {
+func (r *activeRequest) OnDecodeError(context context.Context, err error, headers types.HeaderMap) {
 }
 
 func (r *activeRequest) onPreDecodeComplete() {

@@ -36,12 +36,12 @@ type streamEvent struct {
 	stream    *downStream
 }
 
-func (s *streamEvent) Source() int {
-	source, err := strconv.ParseInt(s.streamID, 10, 32)
+func (s *streamEvent) Source() uint32 {
+	source, err := strconv.ParseUint(s.streamID, 10, 32)
 	if err != nil {
 		panic("streamID must be numeric, unexpected :" + s.streamID)
 	}
-	return int(source)
+	return uint32(source)
 }
 
 type startEvent struct {
@@ -61,7 +61,7 @@ type resetEvent struct {
 type receiveHeadersEvent struct {
 	streamEvent
 
-	headers   map[string]string
+	headers   types.HeaderMap
 	endStream bool
 }
 
@@ -75,7 +75,7 @@ type receiveDataEvent struct {
 type receiveTrailerEvent struct {
 	streamEvent
 
-	trailers map[string]string
+	trailers types.HeaderMap
 }
 
 func eventDispatch(shard int, jobChan <-chan interface{}) {
@@ -104,14 +104,14 @@ func eventProcess(shard int, streamMap map[string]bool, event interface{}) {
 		e := event.(*resetEvent)
 		//log.DefaultLogger.Errorf("[reset] %d %d %s", shard, e.direction, e.streamID)
 
-		if done, ok := streamMap[e.streamID]; ok && !(done || streamProcessDone(e.stream)) {
+		if _, ok := streamMap[e.streamID]; ok {
 			switch e.direction {
 			case Downstream:
 				e.stream.ResetStream(e.reason)
 			case Upstream:
 				e.stream.upstreamRequest.ResetStream(e.reason)
 			default:
-				e.stream.logger.Errorf("Unknown receiveTrailerEvent direction %s", e.direction)
+				e.stream.logger.Errorf("Unknown receiveTrailerEvent direction %d", e.direction)
 			}
 			//	streamMap[e.streamID] = streamMap[e.streamID] || streamProcessDone(e.stream)
 		}
@@ -126,7 +126,7 @@ func eventProcess(shard int, streamMap map[string]bool, event interface{}) {
 			case Upstream:
 				e.stream.upstreamRequest.ReceiveHeaders(e.headers, e.endStream)
 			default:
-				e.stream.logger.Errorf("Unknown receiveHeadersEvent direction %s", e.direction)
+				e.stream.logger.Errorf("Unknown receiveHeadersEvent direction %d", e.direction)
 			}
 			streamMap[e.streamID] = streamMap[e.streamID] || streamProcessDone(e.stream)
 		}
@@ -144,7 +144,7 @@ func eventProcess(shard int, streamMap map[string]bool, event interface{}) {
 			case Upstream:
 				e.stream.upstreamRequest.ReceiveData(e.data, e.endStream)
 			default:
-				e.stream.logger.Errorf("Unknown receiveDataEvent direction %s", e.direction)
+				e.stream.logger.Errorf("Unknown receiveDataEvent direction %d", e.direction)
 			}
 			streamMap[e.streamID] = streamMap[e.streamID] || streamProcessDone(e.stream)
 		}
@@ -159,7 +159,7 @@ func eventProcess(shard int, streamMap map[string]bool, event interface{}) {
 			case Upstream:
 				e.stream.upstreamRequest.ReceiveTrailers(e.trailers)
 			default:
-				e.stream.logger.Errorf("Unknown receiveTrailerEvent direction %s", e.direction)
+				e.stream.logger.Errorf("Unknown receiveTrailerEvent direction %d", e.direction)
 			}
 			streamMap[e.streamID] = streamMap[e.streamID] || streamProcessDone(e.stream)
 		}
